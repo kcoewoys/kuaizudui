@@ -64,6 +64,15 @@ func main() {
 		logger.Error("activity queue reset failed", "error", err)
 		os.Exit(1)
 	}
+
+	resetContext, cancelReset := context.WithCancel(context.Background())
+	defer cancelReset()
+	go func() {
+		if err := application.RunDailyResetScheduler(resetContext); err != nil && !errors.Is(err, context.Canceled) {
+			logger.Error("daily reset scheduler stopped", "error", err)
+		}
+	}()
+
 	router := httpapi.NewRouter(application, db, redisClient, cfg)
 	server := &http.Server{
 		Addr:    fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port),

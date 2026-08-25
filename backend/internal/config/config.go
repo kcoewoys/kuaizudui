@@ -27,6 +27,22 @@ func (d *Duration) UnmarshalYAML(node *yaml.Node) error {
 
 func (d Duration) Value() time.Duration { return time.Duration(d) }
 
+// Clock is a wall-clock time of day in the server's local timezone, parsed
+// from a "HH:MM" string.
+type Clock struct {
+	Hour   int
+	Minute int
+}
+
+func (c *Clock) UnmarshalYAML(node *yaml.Node) error {
+	parsed, err := time.Parse("15:04", node.Value)
+	if err != nil {
+		return fmt.Errorf("invalid clock time %q: want HH:MM", node.Value)
+	}
+	c.Hour, c.Minute = parsed.Hour(), parsed.Minute()
+	return nil
+}
+
 type Config struct {
 	Server   ServerConfig   `yaml:"server"`
 	MySQL    MySQLConfig    `yaml:"mysql"`
@@ -70,6 +86,7 @@ type BusinessConfig struct {
 	ActivityContentMaxLength int      `yaml:"activity_content_max_length"`
 	FirstVisitTTL            Duration `yaml:"first_visit_ttl"`
 	LuckyClaimTTL            Duration `yaml:"lucky_claim_ttl"`
+	DailyResetClock          Clock    `yaml:"daily_reset_time"`
 }
 
 type SecurityConfig struct {
@@ -97,6 +114,7 @@ func defaults() Config {
 			QRCodeUploadDir: "uploads", QRCodeMaxUploadBytes: 5 * 1024 * 1024,
 			LuckyCodeMinLength: 8, LuckyCodeMaxLength: 9, ActivityContentMaxLength: 200,
 			FirstVisitTTL: Duration(365 * 24 * time.Hour), LuckyClaimTTL: Duration(24 * time.Hour),
+			DailyResetClock: Clock{Hour: 0, Minute: 0},
 		},
 		Security: SecurityConfig{AdminSessionTTL: Duration(12 * time.Hour)},
 	}
@@ -151,6 +169,9 @@ func (c Config) Validate() error {
 	}
 	if c.Business.FirstVisitTTL.Value() <= 0 || c.Business.LuckyClaimTTL.Value() <= 0 {
 		problems = append(problems, "business ttl values must be positive")
+	}
+	if clock := c.Business.DailyResetClock; clock.Hour < 0 || clock.Hour > 23 || clock.Minute < 0 || clock.Minute > 59 {
+		problems = append(problems, "business.daily_reset_time must be a valid HH:MM clock time")
 	}
 	if !adminPhonePattern.MatchString(strings.TrimSpace(c.Business.AdminPhone)) {
 		problems = append(problems, "business.admin_phone must be a valid 11-digit mainland mobile number")

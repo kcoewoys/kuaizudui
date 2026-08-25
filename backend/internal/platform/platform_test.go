@@ -659,3 +659,95 @@ func TestActivityClaimCursorServesFIFOAndWrapsAround(t *testing.T) {
 	require.NoError(t, db.Where("uid = ? AND type = ?", "claimant", activityType).First(&claimantRecord).Error)
 	require.Equal(t, int64(1), claimantRecord.OrdinaryRounds)
 }
+
+func TestResetDailyDataClearsRedisAndDailyTablesOnly(t *testing.T) {
+	app, db, redisClient, _ := testPlatform(t)
+	ctx := context.Background()
+
+	_, err := app.PublishActivity(ctx, "user-a", domain.ActivityBuyFood, "invite-a")
+	require.NoError(t, err)
+	_, err = app.PublishActivity(ctx, "user-b", domain.ActivityBuyFood, "invite-b")
+	require.NoError(t, err)
+	_, err = app.UseActivity(ctx, "user-a", domain.ActivityBuyFood)
+	require.NoError(t, err)
+	_, err = app.PublishLucky(ctx, "user-a", "12345678")
+	require.NoError(t, err)
+	_, err = app.ReceiveLucky(ctx, "user-c")
+	require.NoError(t, err)
+	require.NoError(t, db.Create(&domain.Notice{Type: "banner", Content: "keep"}).Error)
+	require.NoError(t, db.Create(&domain.Setting{Key: "custom", Value: "keep"}).Error)
+	require.NoError(t, redisClient.Set(ctx, firstVisitPrefix+"user-a", "1", 0).Err())
+
+	require.NoError(t, app.ResetDailyData(ctx))
+
+	var contents, claims, codes, users int64
+	require.NoError(t, db.Model(&domain.ActivityContent{}).Count(&contents).Error)
+	require.Zero(t, contents)
+	require.NoError(t, db.Model(&domain.ActivityClaim{}).Count(&claims).Error)
+	require.Zero(t, claims)
+	require.NoError(t, db.Model(&domain.LuckyCode{}).Count(&codes).Error)
+	require.Zero(t, codes)
+
+	// Durable rows survive: accounts, notices and unrelated settings.
+	require.NoError(t, db.Model(&domain.User{}).Count(&users).Error)
+	require.Equal(t, int64(3), users)
+	var notice domain.Notice
+	require.NoError(t, db.Where("type = ?", "banner").First(&notice).Error)
+	require.Equal(t, "keep", notice.Content)
+	var setting domain.Setting
+	require.NoError(t, db.Where("`key` = ?", "custom").First(&setting).Error)
+	require.Equal(t, "keep", setting.Value)
+
+	// Redis is emptied entirely, including non-queue markers such as first
+	// visits; the reset is a full FLUSHDB by design.
+	keys, err := redisClient.Keys(ctx, "*").Result()
+	require.NoError(t, err)
+	require.Empty(t, keys)
+}
+
+func TestDailyResetRunsOncePerDay(t *testing.T) {
+	app, db, _, _ := testPlatform(t)
+	app.business.DailyResetClock = config.Clock{Hour: 4, Minute: 0}
+	ctx := context.Background()
+	base := time.Date(2026, 8, 26, 0, 0, 0, 0, time.UTC)
+	current := base
+	app.now = func() time.Time { return current }
+
+	// Before the reset time nothing runs.
+	current = base.Add(3 * time.Hour)
+	ran, err := app.ResetDailyDataIfDue(ctx)
+	require.NoError(t, err)
+	require.False(t, ran)
+	_, err = app.PublishActivity(ctx, "user-a", domain.ActivityBuyFood, "before-reset")
+	require.NoError(t, err)
+
+	// After the time the reset wipes the day's data and records the run.
+	current = base.Add(4*time.Hour + 30*time.Minute)
+	ran, err = app.ResetDailyDataIfDue(ctx)
+	require.NoError(t, err)
+	require.True(t, ran)
+	var contents int64
+	require.NoError(t, db.Model(&domain.ActivityContent{}).Count(&contents).Error)
+	require.Zero(t, contents)
+
+	// A second call on the same day keeps newly published data alive.
+	_, err = app.PublishActivity(ctx, "user-b", domain.ActivityBuyFood, "fresh")
+	require.NoError(t, err)
+	ran, err = app.ResetDailyDataIfDue(ctx)
+	require.NoError(t, err)
+	require.False(t, ran)
+	require.NoError(t, db.Model(&domain.ActivityContent{}).Count(&contents).Error)
+	require.Equal(t, int64(1), contents)
+
+	// The next day the reset becomes due again only after the reset time.
+	current = base.AddDate(0, 0, 1).Add(3 * time.Hour)
+	ran, err = app.ResetDailyDataIfDue(ctx)
+	require.NoError(t, err)
+	require.False(t, ran)
+	current = base.AddDate(0, 0, 1).Add(5 * time.Hour)
+	ran, err = app.ResetDailyDataIfDue(ctx)
+	require.NoError(t, err)
+	require.True(t, ran)
+	require.NoError(t, db.Model(&domain.ActivityContent{}).Count(&contents).Error)
+	require.Zero(t, contents)
+}

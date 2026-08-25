@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -26,6 +27,8 @@ const (
 	groupQRCodeKey           = "group_qrcode"
 	referralRewardPoints     = int64(10)
 	maxActivityQueueAttempts = 1000
+	dailyResetSettingKey     = "daily_reset.last_run"
+	dailyResetDateLayout     = "2006-01-02"
 )
 
 var phonePattern = regexp.MustCompile(`^1\d{10}$`)
@@ -42,6 +45,7 @@ type Platform struct {
 	business config.BusinessConfig
 	security config.SecurityConfig
 	now      func() time.Time
+	resetMu  sync.Mutex
 }
 
 type UserInfo struct {
@@ -111,6 +115,127 @@ func (p *Platform) ResetActivityQueues(ctx context.Context) error {
 		if err := p.activity.Reset(ctx, activityType); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// ResetDailyData wipes everything Redis holds for this deployment and empties
+// the daily MySQL tables (activity contents, activity claims, lucky codes).
+// Durable data — users, points, point records, recharge records, exchange
+// codes, notices, settings, feedback — is left untouched. Redis goes first so
+// an interrupted reset leaves the activity queues re-seeding from MySQL
+// instead of serving already-deleted entries.
+func (p *Platform) ResetDailyData(ctx context.Context) error {
+	if err := p.redis.FlushDB(ctx).Err(); err != nil {
+		return fmt.Errorf("flush redis for daily reset: %w", err)
+	}
+	if err := p.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		for _, target := range []any{&domain.ActivityClaim{}, &domain.ActivityContent{}, &domain.LuckyCode{}} {
+			if err := tx.Where("1 = 1").Delete(target).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("empty daily tables: %w", err)
+	}
+	return nil
+}
+
+// ResetDailyDataIfDue performs the daily reset once today's reset time has
+// passed and no reset has been recorded for today. The completion marker lives
+// in MySQL, so restarting the server never wipes the same day twice and a
+// reset missed while the server was down is caught up on the next start.
+func (p *Platform) ResetDailyDataIfDue(ctx context.Context) (bool, error) {
+	p.resetMu.Lock()
+	defer p.resetMu.Unlock()
+
+	now := p.now()
+	if now.Before(clockOnDate(now, p.business.DailyResetClock)) {
+		return false, nil
+	}
+	today := now.Format(dailyResetDateLayout)
+	lastRun, err := p.dailyResetLastRun(ctx)
+	if err != nil {
+		return false, err
+	}
+	if lastRun == today {
+		return false, nil
+	}
+	if err := p.ResetDailyData(ctx); err != nil {
+		return false, err
+	}
+	if err := p.markDailyResetDone(ctx, today); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// RunDailyResetScheduler blocks until ctx is cancelled, resetting the daily
+// data whenever it becomes due; a failed attempt retries every minute so a
+// transient error cannot skip the day.
+func (p *Platform) RunDailyResetScheduler(ctx context.Context) error {
+	const retryInterval = time.Minute
+	for {
+		ran, err := p.ResetDailyDataIfDue(ctx)
+		if err != nil {
+			slog.ErrorContext(ctx, "daily data reset failed, will retry", "error", err)
+			if !waitFor(ctx, retryInterval) {
+				return ctx.Err()
+			}
+			continue
+		}
+		if ran {
+			slog.InfoContext(ctx, "daily data reset completed")
+		}
+		if !waitFor(ctx, time.Until(p.nextDailyReset(p.now()))) {
+			return ctx.Err()
+		}
+	}
+}
+
+func waitFor(ctx context.Context, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+func (p *Platform) nextDailyReset(now time.Time) time.Time {
+	next := clockOnDate(now, p.business.DailyResetClock)
+	if !now.Before(next) {
+		next = next.AddDate(0, 0, 1)
+	}
+	return next
+}
+
+func clockOnDate(day time.Time, clock config.Clock) time.Time {
+	return time.Date(day.Year(), day.Month(), day.Day(), clock.Hour, clock.Minute, 0, 0, day.Location())
+}
+
+func (p *Platform) dailyResetLastRun(ctx context.Context) (string, error) {
+	var marker domain.Setting
+	err := p.db.WithContext(ctx).Where("`key` = ?", dailyResetSettingKey).First(&marker).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("load daily reset marker: %w", err)
+	}
+	return marker.Value, nil
+}
+
+func (p *Platform) markDailyResetDone(ctx context.Context, date string) error {
+	marker := domain.Setting{Key: dailyResetSettingKey, Value: date}
+	if err := p.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "key"}},
+		DoUpdates: clause.AssignmentColumns([]string{"value", "updated_at"}),
+	}).Create(&marker).Error; err != nil {
+		return fmt.Errorf("store daily reset marker: %w", err)
 	}
 	return nil
 }

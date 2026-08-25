@@ -32,6 +32,9 @@ business:
   activity_content_max_length: 200
   first_visit_ttl: 8760h
   lucky_claim_ttl: 24h
+  # 每日重置时间（服务器本地时区）：清空整个 Redis 并清空当日业务表
+  # （activity_contents / activity_claims / lucky_codes）。
+  daily_reset_time: "00:00"
 
 security:
   admin_session_ttl: 12h
