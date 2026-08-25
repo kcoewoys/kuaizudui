@@ -1,0 +1,39 @@
+server:
+  host: 0.0.0.0
+  port: 8080
+  mode: debug
+  read_timeout: 10s
+  write_timeout: 15s
+  shutdown_timeout: 10s
+  allowed_origins:
+    - http://localhost:5173
+    - http://127.0.0.1:5173
+
+mysql:
+  dsn: root:root@tcp(127.0.0.1:3306)/kuaizudui?charset=utf8mb4&parseTime=True&loc=Local
+  max_idle_connections: 10
+  max_open_connections: 50
+  connection_max_lifetime: 30m
+
+redis:
+  address: 127.0.0.1:6379
+  password: ""
+  database: 0
+  dial_timeout: 3s
+  read_timeout: 2s
+  write_timeout: 2s
+
+business:
+  admin_phone: "13800000000"
+  qrcode_upload_dir: uploads
+  qrcode_max_upload_bytes: 5242880
+  lucky_code_min_length: 8
+  lucky_code_max_length: 9
+  activity_content_max_length: 200
+  first_visit_ttl: 8760h
+  lucky_claim_ttl: 24h
+
+security:
+  admin_session_ttl: 12h
+  # 生产环境请通过 APP_ADMIN_TOKEN_SECRET 环境变量覆盖。
+  admin_token_secret: change-me-in-production

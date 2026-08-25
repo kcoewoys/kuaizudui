@@ -1,0 +1,29 @@
+# Frontend build artifacts
+/frontend/node_modules/
+/frontend/dist/
+/frontend/.vite/
+/frontend/.impeccable/
+
+# Go build & test artifacts
+/backend/server
+/backend/cmd/server/server
+/backend/uploads/
+*.test
+*.out
+
+# Environment files (keep the example)
+.env
+.env.*
+!.env.example
+
+# OS & editors
+.DS_Store
+.idea/
+.vscode/
+
+# Logs & misc
+*.log
+*.tsbuildinfo
+
+# tools
+/.codegraph/

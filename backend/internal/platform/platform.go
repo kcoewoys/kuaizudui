@@ -1,0 +1,873 @@
+package platform
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"log/slog"
+	"regexp"
+	"strings"
+	"time"
+	"unicode/utf8"
+
+	"github.com/eaok-cn/kuaizudui/backend/internal/config"
+	"github.com/eaok-cn/kuaizudui/backend/internal/domain"
+	"github.com/eaok-cn/kuaizudui/backend/internal/queue"
+	"github.com/eaok-cn/kuaizudui/backend/internal/realtime"
+	"github.com/redis/go-redis/v9"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+)
+
+const (
+	firstVisitPrefix         = "first_visit:"
+	groupQRCodeKey           = "group_qrcode"
+	referralRewardPoints     = int64(10)
+	maxActivityQueueAttempts = 1000
+)
+
+var phonePattern = regexp.MustCompile(`^1\d{10}$`)
+
+var errStaleActivityQueueEntry = errors.New("stale activity queue entry")
+
+type Platform struct {
+	db       *gorm.DB
+	redis    redis.UniversalClient
+	lucky    *queue.LuckyQueue
+	activity *queue.ActivityQueue
+	updates  *realtime.ActivityUpdates
+	business config.BusinessConfig
+	security config.SecurityConfig
+	now      func() time.Time
+}
+
+type UserInfo struct {
+	UID            string  `json:"uid"`
+	Phone          *string `json:"phone,omitempty"`
+	InvitedByPhone *string `json:"invited_by_phone,omitempty"`
+	Points         int64   `json:"points"`
+	FirstVisit     bool    `json:"first_visit"`
+}
+
+type LuckyListItem struct {
+	ID         uint      `json:"id"`
+	MaskedCode string    `json:"masked_code"`
+	Source     string    `json:"source"`
+	IsOwn      bool      `json:"is_own"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+type LuckyResult struct {
+	ID        uint      `json:"id"`
+	Code      string    `json:"code"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type ActivityResult struct {
+	Type            string     `json:"type"`
+	Content         string     `json:"content"`
+	Published       bool       `json:"published"`
+	OrdinaryRounds  int64      `json:"ordinary_rounds"`
+	PriorityRounds  int64      `json:"priority_rounds"`
+	PointsCommitted int64      `json:"points_committed"`
+	PriorityCredit  int64      `json:"priority_credit"`
+	ClaimCount      int64      `json:"claim_count"`
+	CanClaim        bool       `json:"can_claim"`
+	PublishedAt     *time.Time `json:"published_at,omitempty"`
+	UpdatedAt       *time.Time `json:"updated_at,omitempty"`
+}
+
+type ActivityUseResult struct {
+	Content string         `json:"content"`
+	Source  string         `json:"source"`
+	State   ActivityResult `json:"state"`
+}
+
+type ExchangeResult struct {
+	AwardedPoints int64 `json:"awarded_points"`
+	TotalPoints   int64 `json:"total_points"`
+}
+
+func New(db *gorm.DB, redisClient redis.UniversalClient, cfg config.Config) *Platform {
+	return &Platform{
+		db: db, redis: redisClient,
+		lucky:    queue.NewLuckyQueue(redisClient, cfg.Business.LuckyClaimTTL.Value()),
+		activity: queue.NewActivityQueue(redisClient),
+		updates:  realtime.NewActivityUpdates(redisClient),
+		business: cfg.Business, security: cfg.Security, now: time.Now,
+	}
+}
+
+func (p *Platform) ResetActivityQueues(ctx context.Context) error {
+	for activityType := range domain.ValidActivityTypes {
+		if err := p.activity.Reset(ctx, activityType); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func GenerateUID() (string, error) {
+	bytes := make([]byte, 16)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", fmt.Errorf("generate uid: %w", err)
+	}
+	return hex.EncodeToString(bytes), nil
+}
+
+func (p *Platform) EnsureUser(ctx context.Context, uid string) (domain.User, error) {
+	uid = strings.TrimSpace(uid)
+	if uid == "" || len(uid) > 40 {
+		return domain.User{}, domain.FieldError{Field: "uid", Message: "must contain 1 to 40 characters"}
+	}
+	user := domain.User{UID: uid}
+	if err := p.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&user).Error; err != nil {
+		return domain.User{}, fmt.Errorf("ensure user: %w", err)
+	}
+	if err := p.db.WithContext(ctx).Where("uid = ?", uid).First(&user).Error; err != nil {
+		return domain.User{}, fmt.Errorf("load user: %w", err)
+	}
+	return user, nil
+}
+
+func (p *Platform) UserInfo(ctx context.Context, uid string) (UserInfo, error) {
+	user, err := p.EnsureUser(ctx, uid)
+	if err != nil {
+		return UserInfo{}, err
+	}
+	firstVisit, err := p.redis.SetNX(ctx, firstVisitPrefix+uid, "1", p.business.FirstVisitTTL.Value()).Result()
+	if err != nil {
+		return UserInfo{}, fmt.Errorf("record first visit: %w", err)
+	}
+	result, err := p.userInfoFromUser(ctx, user)
+	if err != nil {
+		return UserInfo{}, err
+	}
+	result.FirstVisit = firstVisit
+	return result, nil
+}
+
+func (p *Platform) BindPhone(ctx context.Context, uid, phone string) (UserInfo, error) {
+	phone = strings.TrimSpace(phone)
+	if !phonePattern.MatchString(phone) {
+		return UserInfo{}, domain.FieldError{Field: "phone", Message: "must be a valid 11-digit mainland mobile number"}
+	}
+	if _, err := p.EnsureUser(ctx, uid); err != nil {
+		return UserInfo{}, err
+	}
+	var user domain.User
+	err := p.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("uid = ?", uid).First(&user).Error; err != nil {
+			return err
+		}
+		if user.Phone != nil {
+			if *user.Phone != phone {
+				return fmt.Errorf("%w: phone is already bound", domain.ErrConflict)
+			}
+			return nil
+		}
+		var existing int64
+		if err := tx.Model(&domain.User{}).Where("phone = ? AND uid <> ?", phone, uid).Count(&existing).Error; err != nil {
+			return fmt.Errorf("check phone binding: %w", err)
+		}
+		if existing > 0 {
+			return fmt.Errorf("%w: phone already bound", domain.ErrConflict)
+		}
+		if err := tx.Model(&user).Update("phone", phone).Error; err != nil {
+			return fmt.Errorf("bind phone: %w", err)
+		}
+		if user.InvitedByUID == nil || strings.TrimSpace(*user.InvitedByUID) == "" {
+			return tx.Where("uid = ?", uid).First(&user).Error
+		}
+		if err := tx.Model(&domain.User{}).Where("uid = ?", uid).Update("points", gorm.Expr("points + ?", referralRewardPoints)).Error; err != nil {
+			return fmt.Errorf("award referred user points: %w", err)
+		}
+		if err := tx.Model(&domain.User{}).Where("uid = ?", *user.InvitedByUID).Update("points", gorm.Expr("points + ?", referralRewardPoints)).Error; err != nil {
+			return fmt.Errorf("award inviter points: %w", err)
+		}
+		if err := tx.Create(&domain.PointRecord{
+			UID: uid, Source: "invite", Description: "好友绑定手机号奖励", Points: referralRewardPoints,
+		}).Error; err != nil {
+			return fmt.Errorf("record referred user points: %w", err)
+		}
+		if err := tx.Create(&domain.PointRecord{
+			UID: *user.InvitedByUID, Source: "invite", Description: "好友绑定手机号奖励", Points: referralRewardPoints,
+		}).Error; err != nil {
+			return fmt.Errorf("record inviter points: %w", err)
+		}
+		return tx.Where("uid = ?", uid).First(&user).Error
+	})
+	if err != nil {
+		return UserInfo{}, err
+	}
+	return p.userInfoFromUser(ctx, user)
+}
+
+func (p *Platform) ApplyReferral(ctx context.Context, uid, inviterPhone string) (UserInfo, error) {
+	inviterPhone = strings.TrimSpace(inviterPhone)
+	if !phonePattern.MatchString(inviterPhone) {
+		return UserInfo{}, domain.FieldError{Field: "phone", Message: "must be a valid 11-digit mainland mobile number"}
+	}
+	user, err := p.EnsureUser(ctx, uid)
+	if err != nil {
+		return UserInfo{}, err
+	}
+	if user.Phone != nil {
+		return p.userInfoFromUser(ctx, user)
+	}
+	var inviter domain.User
+	if err := p.db.WithContext(ctx).Where("phone = ?", inviterPhone).First(&inviter).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return UserInfo{}, domain.ErrNotFound
+		}
+		return UserInfo{}, fmt.Errorf("find inviter: %w", err)
+	}
+	if inviter.UID == user.UID {
+		return UserInfo{}, fmt.Errorf("%w: cannot invite yourself", domain.ErrConflict)
+	}
+
+	err = p.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var current domain.User
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("uid = ?", uid).First(&current).Error; err != nil {
+			return err
+		}
+		if current.InvitedByUID != nil && strings.TrimSpace(*current.InvitedByUID) != "" {
+			return nil
+		}
+		return tx.Model(&current).Update("invited_by_uid", inviter.UID).Error
+	})
+	if err != nil {
+		return UserInfo{}, fmt.Errorf("apply referral: %w", err)
+	}
+	if err := p.db.WithContext(ctx).Where("uid = ?", uid).First(&user).Error; err != nil {
+		return UserInfo{}, fmt.Errorf("load referred user: %w", err)
+	}
+	return p.userInfoFromUser(ctx, user)
+}
+
+func (p *Platform) userInfoFromUser(ctx context.Context, user domain.User) (UserInfo, error) {
+	result := UserInfo{UID: user.UID, Phone: user.Phone, Points: user.Points}
+	if user.InvitedByUID == nil || strings.TrimSpace(*user.InvitedByUID) == "" {
+		return result, nil
+	}
+	var inviter domain.User
+	if err := p.db.WithContext(ctx).Select("phone").Where("uid = ?", *user.InvitedByUID).First(&inviter).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return result, nil
+		}
+		return UserInfo{}, fmt.Errorf("load inviter phone: %w", err)
+	}
+	result.InvitedByPhone = inviter.Phone
+	return result, nil
+}
+
+func (p *Platform) PublishLucky(ctx context.Context, uid, code string) (LuckyResult, error) {
+	code = strings.TrimSpace(code)
+	if err := validateDigits(code, p.business.LuckyCodeMinLength, p.business.LuckyCodeMaxLength); err != nil {
+		return LuckyResult{}, err
+	}
+	if _, err := p.EnsureUser(ctx, uid); err != nil {
+		return LuckyResult{}, err
+	}
+	item := domain.LuckyCode{UID: uid, Code: code, Status: domain.LuckyStatusAvailable}
+	result := p.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&item)
+	if result.Error != nil {
+		return LuckyResult{}, fmt.Errorf("create lucky code: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return LuckyResult{}, fmt.Errorf("%w: lucky code already published", domain.ErrConflict)
+	}
+	entry := queue.LuckyEntry{ID: item.ID, UID: uid}
+	if err := p.lucky.Publish(ctx, entry); err != nil {
+		_ = p.db.WithContext(ctx).Delete(&item).Error
+		return LuckyResult{}, err
+	}
+	return LuckyResult{ID: item.ID, Code: item.Code, CreatedAt: item.CreatedAt}, nil
+}
+
+func (p *Platform) ListLucky(ctx context.Context, uid string, limit int) ([]LuckyListItem, error) {
+	if limit < 1 || limit > 100 {
+		limit = 20
+	}
+	var codes []domain.LuckyCode
+	if err := p.db.WithContext(ctx).
+		Where("status = ?", domain.LuckyStatusAvailable).
+		Order("id ASC").Limit(limit * 2).Find(&codes).Error; err != nil {
+		return nil, fmt.Errorf("list lucky codes: %w", err)
+	}
+	items := make([]LuckyListItem, 0, limit)
+	for _, code := range codes {
+		claimed, err := p.lucky.Claimed(ctx, code.ID)
+		if err != nil {
+			return nil, err
+		}
+		if claimed {
+			continue
+		}
+		isOwn := code.UID == uid
+		source := maskIdentifier(code.UID)
+		if isOwn {
+			source = "我"
+		}
+		items = append(items, LuckyListItem{
+			ID: code.ID, MaskedCode: maskCode(code.Code), Source: source, IsOwn: isOwn, CreatedAt: code.CreatedAt,
+		})
+		if len(items) == limit {
+			break
+		}
+	}
+	return items, nil
+}
+
+func (p *Platform) ReceiveLucky(ctx context.Context, uid string) (LuckyResult, error) {
+	if _, err := p.EnsureUser(ctx, uid); err != nil {
+		return LuckyResult{}, err
+	}
+	for attempt := 0; attempt < 10; attempt++ {
+		entry, err := p.lucky.Receive(ctx, uid)
+		if err != nil {
+			return LuckyResult{}, err
+		}
+		var item domain.LuckyCode
+		err = p.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&item, entry.ID).Error; err != nil {
+				return err
+			}
+			if item.Status != domain.LuckyStatusAvailable {
+				return domain.ErrAlreadyUsed
+			}
+			if item.UID == uid {
+				return domain.ErrCannotUseOwn
+			}
+			now := p.now()
+			return tx.Model(&item).Updates(map[string]any{"status": domain.LuckyStatusUsed, "used_at": now}).Error
+		})
+		if errors.Is(err, domain.ErrAlreadyUsed) || errors.Is(err, gorm.ErrRecordNotFound) {
+			_ = p.lucky.Release(ctx, entry, false)
+			continue
+		}
+		if errors.Is(err, domain.ErrCannotUseOwn) {
+			_ = p.lucky.Release(ctx, entry, true)
+			continue
+		}
+		if err != nil {
+			_ = p.lucky.Release(ctx, entry, true)
+			return LuckyResult{}, fmt.Errorf("receive lucky code transaction: %w", err)
+		}
+		return LuckyResult{ID: item.ID, Code: item.Code, CreatedAt: item.CreatedAt}, nil
+	}
+	return LuckyResult{}, domain.ErrQueueEmpty
+}
+
+func (p *Platform) UseLucky(ctx context.Context, uid string, id uint) (LuckyResult, error) {
+	if id == 0 {
+		return LuckyResult{}, domain.FieldError{Field: "id", Message: "must be positive"}
+	}
+	var item domain.LuckyCode
+	if err := p.db.WithContext(ctx).First(&item, id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return LuckyResult{}, domain.ErrNotFound
+		}
+		return LuckyResult{}, fmt.Errorf("load lucky code: %w", err)
+	}
+	if item.UID == uid {
+		return LuckyResult{}, domain.ErrCannotUseOwn
+	}
+	if item.Status != domain.LuckyStatusAvailable {
+		return LuckyResult{}, domain.ErrAlreadyUsed
+	}
+	entry := queue.LuckyEntry{ID: item.ID, UID: item.UID}
+	claimed, err := p.lucky.Claim(ctx, item.ID, uid)
+	if err != nil {
+		return LuckyResult{}, err
+	}
+	if !claimed {
+		return LuckyResult{}, domain.ErrAlreadyUsed
+	}
+	now := p.now()
+	result := p.db.WithContext(ctx).Model(&domain.LuckyCode{}).
+		Where("id = ? AND status = ?", id, domain.LuckyStatusAvailable).
+		Updates(map[string]any{"status": domain.LuckyStatusUsed, "used_at": now})
+	if result.Error != nil {
+		_ = p.lucky.Release(ctx, entry, false)
+		return LuckyResult{}, fmt.Errorf("use lucky code: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		_ = p.lucky.Release(ctx, entry, false)
+		return LuckyResult{}, domain.ErrAlreadyUsed
+	}
+	return LuckyResult{ID: item.ID, Code: item.Code, CreatedAt: item.CreatedAt}, nil
+}
+
+func (p *Platform) PublishActivity(ctx context.Context, uid, activityType, content string) (ActivityResult, error) {
+	content = strings.TrimSpace(content)
+	if _, ok := domain.ValidActivityTypes[activityType]; !ok {
+		return ActivityResult{}, domain.FieldError{Field: "type", Message: "unsupported activity type"}
+	}
+	if content == "" || utf8.RuneCountInString(content) > p.business.ActivityContentMaxLength {
+		return ActivityResult{}, domain.FieldError{Field: "content", Message: fmt.Sprintf("must contain 1 to %d characters", p.business.ActivityContentMaxLength)}
+	}
+	if _, err := p.EnsureUser(ctx, uid); err != nil {
+		return ActivityResult{}, err
+	}
+	item := domain.ActivityContent{UID: uid, Type: activityType, Content: content}
+	err := p.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "uid"}, {Name: "type"}},
+		DoUpdates: clause.Assignments(map[string]any{"content": content, "updated_at": p.now()}),
+	}).Create(&item).Error
+	if err != nil {
+		return ActivityResult{}, fmt.Errorf("publish activity content: %w", err)
+	}
+	if err := p.db.WithContext(ctx).Where("uid = ? AND type = ?", uid, activityType).First(&item).Error; err != nil {
+		return ActivityResult{}, fmt.Errorf("load activity content: %w", err)
+	}
+	if item.OrdinaryCredit > 0 && item.OrdinaryRounds < item.ClaimCount {
+		if err := p.activity.EnqueueOrdinary(ctx, activityType, uid); err != nil {
+			_ = p.activity.InvalidateSeed(ctx, activityType)
+			return ActivityResult{}, err
+		}
+	} else if err := p.activity.RemoveOrdinary(ctx, activityType, uid); err != nil {
+		_ = p.activity.InvalidateSeed(ctx, activityType)
+		return ActivityResult{}, err
+	}
+	if item.PriorityCredit > 0 {
+		if err := p.activity.EnqueuePriority(ctx, activityType, uid); err != nil {
+			_ = p.activity.InvalidateSeed(ctx, activityType)
+			return ActivityResult{}, err
+		}
+	}
+	return p.activityResultWithAvailability(ctx, uid, item)
+}
+
+func (p *Platform) ActivityDetail(ctx context.Context, uid, activityType string) (ActivityResult, error) {
+	if _, ok := domain.ValidActivityTypes[activityType]; !ok {
+		return ActivityResult{}, domain.FieldError{Field: "type", Message: "unsupported activity type"}
+	}
+	var item domain.ActivityContent
+	err := p.db.WithContext(ctx).Where("uid = ? AND type = ?", uid, activityType).First(&item).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return ActivityResult{Type: activityType, Published: false}, nil
+	}
+	if err != nil {
+		return ActivityResult{}, fmt.Errorf("load activity detail: %w", err)
+	}
+	return p.activityResultWithAvailability(ctx, uid, item)
+}
+
+func (p *Platform) BoostActivity(ctx context.Context, uid, activityType string, points int64) (ActivityResult, error) {
+	if _, ok := domain.ValidActivityTypes[activityType]; !ok {
+		return ActivityResult{}, domain.FieldError{Field: "type", Message: "unsupported activity type"}
+	}
+	if points < 1 {
+		return ActivityResult{}, domain.FieldError{Field: "points", Message: "must be a positive integer"}
+	}
+	var item domain.ActivityContent
+	err := p.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var user domain.User
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("uid = ?", uid).First(&user).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return domain.ErrNotFound
+			}
+			return err
+		}
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("uid = ? AND type = ?", uid, activityType).First(&item).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return domain.ErrNotFound
+			}
+			return err
+		}
+		if user.Points < points {
+			return domain.ErrInsufficientPoints
+		}
+		item.PointsCommitted += points
+		item.PriorityCredit += points
+		if err := tx.Model(&item).UpdateColumns(map[string]any{
+			"boost_points_used": item.PointsCommitted,
+			"priority_credit":   item.PriorityCredit,
+		}).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&user).Update("points", gorm.Expr("points - ?", points)).Error; err != nil {
+			return err
+		}
+		record := domain.PointRecord{
+			UID: uid, Source: "activity_boost", Description: "活动积分插队", Points: -points,
+		}
+		if err := tx.Create(&record).Error; err != nil {
+			return err
+		}
+		return p.activity.EnqueuePriority(ctx, activityType, uid)
+	})
+	if err != nil {
+		return ActivityResult{}, err
+	}
+	return p.ActivityDetail(ctx, uid, activityType)
+}
+
+func (p *Platform) UseActivity(ctx context.Context, uid, activityType string) (ActivityUseResult, error) {
+	if _, ok := domain.ValidActivityTypes[activityType]; !ok {
+		return ActivityUseResult{}, domain.FieldError{Field: "type", Message: "unsupported activity type"}
+	}
+	var claimantCount int64
+	if err := p.db.WithContext(ctx).Model(&domain.ActivityContent{}).
+		Where("uid = ? AND type = ?", uid, activityType).Count(&claimantCount).Error; err != nil {
+		return ActivityUseResult{}, fmt.Errorf("check activity claimant: %w", err)
+	}
+	if claimantCount == 0 {
+		return ActivityUseResult{}, domain.ErrNotFound
+	}
+	if err := p.ensureActivityQueues(ctx, activityType); err != nil {
+		return ActivityUseResult{}, err
+	}
+
+	if result, ok, err := p.claimPriorityActivity(ctx, uid, activityType); err != nil {
+		return ActivityUseResult{}, err
+	} else if ok {
+		return p.activityUseResultWithAvailability(ctx, uid, result)
+	}
+	result, err := p.claimOrdinaryActivity(ctx, uid, activityType)
+	if err != nil {
+		return ActivityUseResult{}, err
+	}
+	return p.activityUseResultWithAvailability(ctx, uid, result)
+}
+
+func (p *Platform) ensureActivityQueues(ctx context.Context, activityType string) error {
+	seeded, err := p.activity.Seeded(ctx, activityType)
+	if err != nil {
+		return err
+	}
+	if seeded {
+		return nil
+	}
+	var items []domain.ActivityContent
+	if err := p.db.WithContext(ctx).Where("type = ?", activityType).Order("id ASC").Find(&items).Error; err != nil {
+		return fmt.Errorf("load activity queue seed: %w", err)
+	}
+	for _, item := range items {
+		if item.OrdinaryCredit > 0 && item.OrdinaryRounds < item.ClaimCount {
+			if err := p.activity.EnqueueOrdinary(ctx, activityType, item.UID); err != nil {
+				return err
+			}
+		}
+		if item.PriorityCredit > 0 {
+			if err := p.activity.EnqueuePriority(ctx, activityType, item.UID); err != nil {
+				return err
+			}
+		}
+	}
+	return p.activity.MarkSeeded(ctx, activityType)
+}
+
+func (p *Platform) claimPriorityActivity(ctx context.Context, uid, activityType string) (ActivityUseResult, bool, error) {
+	for attempt := 0; attempt < maxActivityQueueAttempts; attempt++ {
+		candidateUID, err := p.activity.NextPriority(ctx, activityType, uid)
+		if errors.Is(err, domain.ErrQueueEmpty) {
+			return ActivityUseResult{}, false, nil
+		}
+		if err != nil {
+			return ActivityUseResult{}, false, err
+		}
+		result, credit, err := p.deliverActivity(ctx, uid, candidateUID, activityType, "priority")
+		if errors.Is(err, errStaleActivityQueueEntry) {
+			if removeErr := p.activity.RemovePriority(ctx, activityType, candidateUID); removeErr != nil {
+				return ActivityUseResult{}, false, removeErr
+			}
+			continue
+		}
+		if err != nil {
+			return ActivityUseResult{}, false, err
+		}
+		if credit == 0 {
+			_ = p.activity.RemovePriority(ctx, activityType, candidateUID)
+		}
+		return result, true, nil
+	}
+	return ActivityUseResult{}, false, nil
+}
+
+func (p *Platform) claimOrdinaryActivity(ctx context.Context, uid, activityType string) (ActivityUseResult, error) {
+	for attempt := 0; attempt < maxActivityQueueAttempts; attempt++ {
+		candidateUID, err := p.activity.NextOrdinary(ctx, activityType, uid)
+		if err != nil {
+			return ActivityUseResult{}, err
+		}
+		result, credit, err := p.deliverActivity(ctx, uid, candidateUID, activityType, "ordinary")
+		if errors.Is(err, errStaleActivityQueueEntry) {
+			if removeErr := p.activity.RemoveOrdinary(ctx, activityType, candidateUID); removeErr != nil {
+				return ActivityUseResult{}, removeErr
+			}
+			continue
+		}
+		if err != nil {
+			return ActivityUseResult{}, err
+		}
+		if credit == 0 {
+			_ = p.activity.RemoveOrdinary(ctx, activityType, candidateUID)
+		}
+		return result, nil
+	}
+	return ActivityUseResult{}, domain.ErrQueueEmpty
+}
+
+func (p *Platform) deliverActivity(
+	ctx context.Context,
+	claimantUID, candidateUID, activityType, source string,
+) (ActivityUseResult, int64, error) {
+	var delivered ActivityUseResult
+	var remainingCredit int64
+	err := p.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var items []domain.ActivityContent
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("type = ? AND uid IN ?", activityType, []string{claimantUID, candidateUID}).
+			Order("uid ASC").Find(&items).Error; err != nil {
+			return err
+		}
+		var claimant, candidate *domain.ActivityContent
+		for index := range items {
+			switch items[index].UID {
+			case claimantUID:
+				claimant = &items[index]
+			case candidateUID:
+				candidate = &items[index]
+			}
+		}
+		if claimant == nil {
+			return domain.ErrNotFound
+		}
+		if candidate == nil {
+			return errStaleActivityQueueEntry
+		}
+
+		claimant.ClaimCount++
+		claimant.OrdinaryCredit++
+		if source == "priority" {
+			if candidate.PriorityCredit <= 0 {
+				return errStaleActivityQueueEntry
+			}
+			candidate.PriorityCredit--
+			candidate.PriorityRounds++
+			if err := tx.Model(candidate).UpdateColumns(map[string]any{
+				"boost_rounds":    candidate.PriorityRounds,
+				"priority_credit": candidate.PriorityCredit,
+			}).Error; err != nil {
+				return err
+			}
+			remainingCredit = candidate.PriorityCredit
+		} else {
+			if candidate.OrdinaryCredit <= 0 || candidate.OrdinaryRounds >= candidate.ClaimCount {
+				return errStaleActivityQueueEntry
+			}
+			candidate.OrdinaryRounds++
+			candidate.OrdinaryCredit--
+			if err := tx.Model(candidate).UpdateColumns(map[string]any{
+				"ordinary_rounds": candidate.OrdinaryRounds,
+				"ordinary_credit": candidate.OrdinaryCredit,
+			}).Error; err != nil {
+				return err
+			}
+			remainingCredit = candidate.OrdinaryCredit
+		}
+		if err := tx.Model(claimant).UpdateColumns(map[string]any{
+			"ordinary_credit": claimant.OrdinaryCredit,
+			"used_count":      claimant.ClaimCount,
+		}).Error; err != nil {
+			return err
+		}
+		delivered = ActivityUseResult{
+			Content: candidate.Content,
+			Source:  source,
+			State:   activityResult(*claimant),
+		}
+		return nil
+	})
+	if err != nil {
+		return ActivityUseResult{}, 0, err
+	}
+	queueContext, cancelQueue := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+	if err := p.activity.EnqueueOrdinary(queueContext, activityType, claimantUID); err != nil {
+		slog.WarnContext(ctx, "enqueue earned ordinary activity credit failed", "type", activityType, "error", err)
+		_ = p.activity.InvalidateSeed(queueContext, activityType)
+	}
+	cancelQueue()
+	notifyContext, cancelNotify := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+	defer cancelNotify()
+	if err := p.updates.Publish(notifyContext, candidateUID, activityType); err != nil {
+		slog.WarnContext(ctx, "activity update notification failed", "type", activityType, "error", err)
+	}
+	return delivered, remainingCredit, nil
+}
+
+func (p *Platform) Points(ctx context.Context, uid string) (int64, error) {
+	user, err := p.EnsureUser(ctx, uid)
+	if err != nil {
+		return 0, err
+	}
+	return user.Points, nil
+}
+
+func (p *Platform) PointsHistory(ctx context.Context, uid string, limit, offset int) ([]domain.PointRecord, error) {
+	if _, err := p.EnsureUser(ctx, uid); err != nil {
+		return nil, err
+	}
+	if limit < 1 || limit > 100 {
+		limit = 20
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	var records []domain.PointRecord
+	if err := p.db.WithContext(ctx).Where("uid = ? AND points > 0", uid).
+		Order("id DESC").Limit(limit).Offset(offset).Find(&records).Error; err != nil {
+		return nil, fmt.Errorf("list points history: %w", err)
+	}
+	return records, nil
+}
+
+func (p *Platform) Exchange(ctx context.Context, uid, code string) (ExchangeResult, error) {
+	code = strings.ToUpper(strings.TrimSpace(code))
+	if code == "" {
+		return ExchangeResult{}, domain.FieldError{Field: "code", Message: "is required"}
+	}
+	if _, err := p.EnsureUser(ctx, uid); err != nil {
+		return ExchangeResult{}, err
+	}
+	var exchange domain.ExchangeCode
+	var total int64
+	err := p.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("code = ?", code).First(&exchange).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return domain.ErrNotFound
+			}
+			return err
+		}
+		if exchange.Status != domain.ExchangeStatusUnused {
+			return domain.ErrAlreadyUsed
+		}
+		now := p.now()
+		if err := tx.Model(&exchange).Updates(map[string]any{
+			"status": domain.ExchangeStatusUsed, "used_uid": uid, "used_at": now,
+		}).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&domain.User{}).Where("uid = ?", uid).
+			Update("points", gorm.Expr("points + ?", exchange.Points)).Error; err != nil {
+			return err
+		}
+		if err := tx.Create(&domain.PointRecord{
+			UID: uid, Source: "exchange_code", Description: "兑换码奖励", Points: exchange.Points,
+		}).Error; err != nil {
+			return err
+		}
+		return tx.Model(&domain.User{}).Select("points").Where("uid = ?", uid).Scan(&total).Error
+	})
+	if err != nil {
+		return ExchangeResult{}, err
+	}
+	return ExchangeResult{AwardedPoints: exchange.Points, TotalPoints: total}, nil
+}
+
+func (p *Platform) Notice(ctx context.Context, noticeType string) (domain.Notice, error) {
+	var notice domain.Notice
+	err := p.db.WithContext(ctx).First(&notice, "type = ?", noticeType).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return domain.Notice{Type: noticeType}, nil
+	}
+	if err != nil {
+		return domain.Notice{}, fmt.Errorf("load notice: %w", err)
+	}
+	return notice, nil
+}
+
+func (p *Platform) GroupQRCode(ctx context.Context) (string, error) {
+	var setting domain.Setting
+	err := p.db.WithContext(ctx).First(&setting, "`key` = ?", groupQRCodeKey).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("load group qrcode: %w", err)
+	}
+	return setting.Value, nil
+}
+
+func validateDigits(value string, minLength, maxLength int) error {
+	if len(value) < minLength || len(value) > maxLength {
+		return domain.FieldError{Field: "code", Message: fmt.Sprintf("must contain %d or %d digits", minLength, maxLength)}
+	}
+	for _, char := range value {
+		if char < '0' || char > '9' {
+			return domain.FieldError{Field: "code", Message: "must contain digits only"}
+		}
+	}
+	return nil
+}
+
+func maskCode(code string) string {
+	if len(code) < 6 {
+		return "***"
+	}
+	return code[:3] + "**" + code[len(code)-3:]
+}
+
+func maskIdentifier(value string) string {
+	characters := []rune(strings.TrimSpace(value))
+	if len(characters) == 0 {
+		return "未知"
+	}
+	if len(characters) <= 2 {
+		return string(characters[0]) + "***"
+	}
+	if len(characters) <= 6 {
+		return string(characters[0]) + "***" + string(characters[len(characters)-1])
+	}
+	return string(characters[:3]) + "***" + string(characters[len(characters)-3:])
+}
+
+func activityResult(item domain.ActivityContent) ActivityResult {
+	return ActivityResult{
+		Type: item.Type, Content: item.Content, Published: true,
+		OrdinaryRounds: item.OrdinaryRounds, PriorityRounds: item.PriorityRounds,
+		PointsCommitted: item.PointsCommitted, PriorityCredit: item.PriorityCredit,
+		ClaimCount:  item.ClaimCount,
+		PublishedAt: &item.CreatedAt, UpdatedAt: &item.UpdatedAt,
+	}
+}
+
+func (p *Platform) activityResultWithAvailability(
+	ctx context.Context, uid string, item domain.ActivityContent,
+) (ActivityResult, error) {
+	result := activityResult(item)
+	canClaim, err := p.canClaimActivity(ctx, uid, item.Type)
+	if err != nil {
+		return ActivityResult{}, err
+	}
+	result.CanClaim = canClaim
+	return result, nil
+}
+
+func (p *Platform) activityUseResultWithAvailability(
+	ctx context.Context, uid string, result ActivityUseResult,
+) (ActivityUseResult, error) {
+	canClaim, err := p.canClaimActivity(ctx, uid, result.State.Type)
+	if err != nil {
+		return ActivityUseResult{}, err
+	}
+	result.State.CanClaim = canClaim
+	return result, nil
+}
+
+func (p *Platform) canClaimActivity(ctx context.Context, uid, activityType string) (bool, error) {
+	var count int64
+	err := p.db.WithContext(ctx).Model(&domain.ActivityContent{}).
+		Where("type = ? AND uid <> ?", activityType, uid).
+		Where("priority_credit > 0 OR (ordinary_credit > 0 AND ordinary_rounds < used_count)").
+		Count(&count).Error
+	if err != nil {
+		return false, fmt.Errorf("check activity availability: %w", err)
+	}
+	return count > 0, nil
+}
