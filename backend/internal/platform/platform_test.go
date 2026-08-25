@@ -57,8 +57,8 @@ func TestActivityTypesUseTheSameRulesAndIndependentRecords(t *testing.T) {
 		published, err := app.PublishActivity(ctx, "user-a", activityType, content)
 		require.NoError(t, err)
 		require.True(t, published.Published)
-		// The first publication carries one free claim credit.
-		require.Equal(t, int64(1), published.ClaimCount)
+		// Publishing itself earns no claim credit — only claim clicks count.
+		require.Zero(t, published.ClaimCount)
 
 		detail, err := app.ActivityDetail(ctx, "user-a", activityType)
 		require.NoError(t, err)
@@ -67,13 +67,13 @@ func TestActivityTypesUseTheSameRulesAndIndependentRecords(t *testing.T) {
 		peerContent := "peer-content-for-" + activityType
 		_, err = app.PublishActivity(ctx, "user-b", activityType, peerContent)
 		require.NoError(t, err)
-		// Both publishers are servable right away, so user-a's first claim
-		// click already receives user-b's content — the pool cold-starts.
+		// The cursor serves publishers in publish order regardless of credit,
+		// so user-a's first claim click already receives user-b's content.
 		claimed, err := app.UseActivity(ctx, "user-a", activityType)
 		require.NoError(t, err)
 		require.Equal(t, peerContent, claimed.Content)
 		require.Equal(t, "ordinary", claimed.Source)
-		require.Equal(t, int64(2), claimed.State.ClaimCount)
+		require.Equal(t, int64(1), claimed.State.ClaimCount)
 	}
 
 	_, err := app.PublishActivity(ctx, "user-a", domain.ActivityCashTurntable, strings.Repeat("现", 201))
@@ -117,20 +117,20 @@ func TestActivityClaimIncrementsClaimantCountAndContentOwnerRound(t *testing.T) 
 	claimed, err := app.UseActivity(ctx, "claimant", activityType)
 	require.NoError(t, err)
 	require.Equal(t, "owner invitation", claimed.Content)
-	require.Equal(t, int64(2), claimed.State.ClaimCount)
+	require.Equal(t, int64(1), claimed.State.ClaimCount)
 	require.Zero(t, claimed.State.OrdinaryRounds)
 
 	owner, err := app.ActivityDetail(ctx, "content-owner", activityType)
 	require.NoError(t, err)
 	require.Equal(t, int64(1), owner.OrdinaryRounds)
-	require.Equal(t, owner.OrdinaryRounds, owner.ClaimCount)
+	require.Zero(t, owner.ClaimCount)
 	var claimantRecord domain.ActivityContent
 	require.NoError(t, db.Where("uid = ? AND type = ?", "claimant", activityType).First(&claimantRecord).Error)
-	require.Equal(t, int64(2), claimantRecord.OrdinaryCredit)
+	require.Equal(t, int64(1), claimantRecord.OrdinaryCredit)
 	var ownerRecord domain.ActivityContent
 	require.NoError(t, db.Where("uid = ? AND type = ?", "content-owner", activityType).First(&ownerRecord).Error)
-	// The cursor never drains a publisher: serving keeps the publication grant.
-	require.Equal(t, int64(1), ownerRecord.OrdinaryCredit)
+	// The cursor never drains a publisher: serving leaves the owner's credit untouched.
+	require.Zero(t, ownerRecord.OrdinaryCredit)
 }
 
 func TestActivityClaimLoopsBackAfterEveryFreshPublisherIsServed(t *testing.T) {
@@ -228,7 +228,7 @@ func TestActivityBoostServesPriorityBeforeOrdinary(t *testing.T) {
 	require.Equal(t, int64(2), owner.PriorityRounds)
 	require.Equal(t, owner.PriorityRounds, owner.PointsCommitted)
 	require.Equal(t, int64(1), owner.OrdinaryRounds)
-	require.Equal(t, int64(1), owner.ClaimCount)
+	require.Zero(t, owner.ClaimCount)
 }
 
 func TestActivityClaimCyclesWithoutDrainingTheQueue(t *testing.T) {
@@ -471,13 +471,13 @@ func TestActivityClaimUsesPriorityBeforeOrdinaryAndSkipsSelf(t *testing.T) {
 		result, err := app.PublishActivity(ctx, publication.uid, activityType, publication.content)
 		require.NoError(t, err)
 		require.Zero(t, result.OrdinaryRounds)
-		require.Equal(t, int64(1), result.ClaimCount)
+		require.Zero(t, result.ClaimCount)
 	}
 	ordinary, err := app.UseActivity(ctx, "user-a", activityType)
 	require.NoError(t, err)
 	require.Equal(t, "ordinary", ordinary.Source)
 	require.Equal(t, "invite-b", ordinary.Content)
-	require.Equal(t, int64(2), ordinary.State.ClaimCount)
+	require.Equal(t, int64(1), ordinary.State.ClaimCount)
 	require.Zero(t, ordinary.State.OrdinaryRounds)
 	userB, err := app.ActivityDetail(ctx, "user-b", activityType)
 	require.NoError(t, err)
@@ -494,7 +494,7 @@ func TestActivityClaimUsesPriorityBeforeOrdinaryAndSkipsSelf(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "priority", priority.Source)
 	require.Equal(t, "invite-c", priority.Content)
-	require.Equal(t, int64(3), priority.State.ClaimCount)
+	require.Equal(t, int64(2), priority.State.ClaimCount)
 	userC, err := app.ActivityDetail(ctx, "user-c", activityType)
 	require.NoError(t, err)
 	require.Equal(t, int64(1), userC.PriorityRounds)
@@ -504,7 +504,7 @@ func TestActivityClaimUsesPriorityBeforeOrdinaryAndSkipsSelf(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "ordinary", priorityOnlySelf.Source)
 	require.Equal(t, "invite-a", priorityOnlySelf.Content)
-	require.Equal(t, int64(2), priorityOnlySelf.State.ClaimCount)
+	require.Equal(t, int64(1), priorityOnlySelf.State.ClaimCount)
 
 	// user-c's remaining priority credit cannot serve user-a again — but the
 	// ordinary queue never drains: with no fresh publisher left the cursor
@@ -584,12 +584,11 @@ func TestActivityClaimWithOnlyOwnPublicationReturnsQueueEmpty(t *testing.T) {
 
 	_, err = app.UseActivity(ctx, "user-a", activityType)
 	require.ErrorIs(t, err, domain.ErrQueueEmpty)
-	// The click still earned one claim credit on top of the publication grant:
-	// rounds stay zero while the claim count is two.
+	// A claim that serves nothing is a failed claim and counts for nothing.
 	detail, err := app.ActivityDetail(ctx, "user-a", activityType)
 	require.NoError(t, err)
 	require.Zero(t, detail.OrdinaryRounds)
-	require.Equal(t, int64(2), detail.ClaimCount)
+	require.Zero(t, detail.ClaimCount)
 }
 
 func TestActivityClaimRebuildsQueuesFromDatabaseAfterRedisFlush(t *testing.T) {
@@ -638,23 +637,23 @@ func TestActivityClaimCursorServesFIFOAndWrapsAround(t *testing.T) {
 	var zero domain.ActivityContent
 	require.NoError(t, db.Where("uid = ? AND type = ?", "zero-owner", activityType).First(&zero).Error)
 	require.Equal(t, int64(2), zero.OrdinaryRounds)
-	require.Equal(t, int64(1), zero.OrdinaryCredit)
+	require.Zero(t, zero.OrdinaryCredit)
 	var funded domain.ActivityContent
 	require.NoError(t, db.Where("uid = ? AND type = ?", "funded-owner", activityType).First(&funded).Error)
 	require.Equal(t, int64(1), funded.OrdinaryRounds)
-	require.Equal(t, int64(1), funded.OrdinaryCredit)
+	require.Zero(t, funded.OrdinaryCredit)
 
 	// The claimant's own clicks earned credit but never served themselves.
 	var claimantRecord domain.ActivityContent
 	require.NoError(t, db.Where("uid = ? AND type = ?", "claimant", activityType).First(&claimantRecord).Error)
 	require.Zero(t, claimantRecord.OrdinaryRounds)
-	require.Equal(t, int64(4), claimantRecord.OrdinaryCredit)
+	require.Equal(t, int64(3), claimantRecord.OrdinaryCredit)
 
 	// A publisher's turn also comes from other claimants' clicks.
 	claimedBack, err := app.UseActivity(ctx, "funded-owner", activityType)
 	require.NoError(t, err)
 	require.Equal(t, "claimant invitation", claimedBack.Content)
-	require.Equal(t, int64(2), claimedBack.State.ClaimCount)
+	require.Equal(t, int64(1), claimedBack.State.ClaimCount)
 	require.Equal(t, int64(1), claimedBack.State.OrdinaryRounds)
 
 	require.NoError(t, db.Where("uid = ? AND type = ?", "claimant", activityType).First(&claimantRecord).Error)

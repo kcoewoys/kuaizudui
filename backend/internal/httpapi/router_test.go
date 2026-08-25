@@ -103,8 +103,8 @@ func TestIdentityAndActivityRoundTrip(t *testing.T) {
 	require.Equal(t, http.StatusOK, claim.Code)
 	require.Contains(t, claim.Body.String(), `"content":"another user's invitation"`)
 	require.Contains(t, claim.Body.String(), `"source":"ordinary"`)
-	// One publication grant plus this claim click.
-	require.Contains(t, claim.Body.String(), `"claim_count":2`)
+	// Publishing grants nothing; this claim click is the only count.
+	require.Contains(t, claim.Body.String(), `"claim_count":1`)
 }
 
 func TestActivityEventsStreamUpdatesThePublisherAfterAClaim(t *testing.T) {

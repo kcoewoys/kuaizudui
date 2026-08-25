@@ -1,6 +1,6 @@
-# eaok.cn 活动分享平台
+# 前端
+移动端前端: Vue 3、TypeScript、Tailwind CSS
 
-基于用户提供的 Google Stitch `fudai-v2` 项目实现的 Vue 3 + TypeScript + Tailwind CSS 移动端前端。
 
 ## 运行
 
@@ -15,7 +15,6 @@ docker compose up --build
 
 ```bash
 cd frontend
-npm install
 npm run dev
 ```
 
@@ -46,10 +45,8 @@ npm run build
 
 前端已通过 `frontend/src/services/api.ts` 接入真实 Go 接口。业务数据全部存入 MySQL/Redis；浏览器只在 `localStorage` 保存后端签发的随机 UID，用于保持匿名用户会话。
 
-## 后端
+# 后端
 
 后端采用 Go、Gin、Gorm、MySQL 和 Redis，包含配置文件、Docker Compose、自动数据库迁移、Redis Lua 福袋队列、用户活动、积分兑换及管理员接口。运行说明和完整接口表见 [`backend/README.md`](backend/README.md)。
 
 管理员手机号配置在 `backend/config/config.yaml` 的 `business.admin_phone`。部署环境也可通过 `APP_ADMIN_PHONE` 覆盖；正确号码不会写入前端代码。
-
-Stitch 的 8 份原始 HTML 与截图保存在 `frontend/stitch-export/`，映射见该目录的 README。

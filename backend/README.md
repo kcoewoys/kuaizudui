@@ -90,7 +90,7 @@ curl -H 'X-UID: 上一步返回的值' http://127.0.0.1:8080/api/v1/points
 | `POST` | `/api/v1/activity/publish` | 发布买菜或现金活动内容 |
 | `GET` | `/api/v1/activity/detail?type=...` | 查询自己的活动内容 |
 | `POST` | `/api/v1/activity/boost` | 提交积分并加入活动插队队列 |
-| `POST` | `/api/v1/activity/use` | 优先从插队队列、再从普通队列领取其他用户内容 |
+| `POST` | `/api/v1/activity/use` | 优先从插队队列、再从普通队列领取其他用户内容；不能领取本人的及已领过的 |
 | `GET` | `/api/v1/activity/events` | SSE 实时推送本人活动轮次更新 |
 | `GET` | `/api/v1/points` | 查询积分 |
 | `GET` | `/api/v1/points/history` | 查询加分来源记录；不返回扣分和零积分记录 |
@@ -103,137 +103,86 @@ curl -H 'X-UID: 上一步返回的值' http://127.0.0.1:8080/api/v1/points
 
 ## 活动领取双队列
 
-活动领取使用“插队优先、普通兜底”的两级轮询模型。MySQL 是轮次和额度的最终事实来源，Redis 只保存当前可参与调度的用户 ID，不保存轮次数值。每个用户在每种活动类型下只有一条活动内容记录。
+四种活动共用同一套“普通队列 + 插队队列”领取模型：发布进入普通队列，使用积分进入插队队列；领取时先消费插队队列，插队队列没有可选候选人时落到普通队列。MySQL 保存轮数和额度并作为最终事实来源，Redis 保存调度顺序与队列计数。
 
-### 领域字段与不变量
+### 计数规则
 
-`activity_contents` 中与队列有关的字段如下：
+每个用户在每种活动下只有一条 `activity_contents` 记录：
 
 | 领域含义 | 数据库字段 | 说明 |
 | --- | --- | --- |
-| 领码次数 | `used_count` | 本人成功领取其他用户内容的累计次数 |
-| 普通轮数 | `ordinary_rounds` | 本人内容从普通队列成功发给其他用户的累计次数 |
-| 普通额度 | `ordinary_credit` | 本人内容还能从普通队列发出的次数 |
-| 插队轮数 | `boost_rounds` | 本人内容从插队队列成功发给其他用户的累计次数 |
-| 已投入积分 | `boost_points_used` | 本人累计确认用于插队的积分 |
-| 插队额度 | `priority_credit` | 本人内容还能从插队队列发出的次数 |
+| 领码次数 | `used_count` | 每次成功领取到内容 +1；无可领内容即领取失败、不计数 |
+| 普通轮数 | `ordinary_rounds` | 本人内容被其他用户从普通队列领取的累计次数 |
+| 普通额度 | `ordinary_credit` | 本人内容还能被领取的次数，即普通队列中的计数 |
+| 插队轮数 | `boost_rounds` | 本人内容被其他用户从插队队列领取的累计次数 |
+| 已投入积分 | `boost_points_used` | 本人累计用于插队的积分 |
+| 插队额度 | `priority_credit` | 本人内容还能从插队队列被领取的次数 |
 
-普通队列始终遵守以下不变量：
-
-```text
-普通额度 = 领码次数 - 普通轮数
-ordinary_credit = used_count - ordinary_rounds
-```
-
-因此，普通轮数等于领码次数时，普通额度为 `0`，该用户不能继续从普通队列向外提供内容。插队额度独立于普通额度，每投入 `1` 积分增加 `1` 次插队额度。
-
-### 一键领码状态转移
-
-`POST /api/v1/activity/use` 成功后，无论内容来自哪个队列，领取人都会获得一次领码记录和一次新的普通额度：
+两个队列遵守同一形式的不变量（额度即队列计数）：
 
 ```text
-领取人：
-  used_count       + 1
-  ordinary_credit  + 1
+普通额度 = 领码次数 - 普通轮数        ordinary_credit   = used_count - ordinary_rounds
+插队额度 = 已投入积分 - 插队轮数      priority_credit   = boost_points_used - boost_rounds
 ```
 
-内容所属用户按实际命中的队列更新：
+额度归零时页面上的两个数字必然相等：普通队列显示“X 轮 / Y 次领码”（X = 普通轮数，Y = 领码次数），额度为 0 时 X == Y；插队队列显示“X 轮 / Y 积分”，同理。
 
-```text
-命中普通队列：
-  ordinary_rounds  + 1
-  ordinary_credit  - 1
+### 状态转移
 
-命中插队队列：
-  boost_rounds     + 1
-  priority_credit  - 1
-```
-
-领取人和内容所属用户的更新在同一个 MySQL 事务内完成，并对双方活动记录加行锁。这样并发领取不会让同一份额度被重复消费。普通队列还会在事务内再次验证：
-
-```text
-ordinary_credit > 0 AND ordinary_rounds < used_count
-```
-
-Redis 中即使短暂残留了过期 ID，也不能绕过数据库校验；过期 ID 会被移出队列，然后继续寻找下一个候选人。
+- **首次发布**：`used_count = 0`、`ordinary_credit = 0`——发布本身不产生领码次数；照常进入普通队列参与轮转。重新发布（修改内容）只更新内容，不改变任何计数。
+- **点击一键领码且领到内容**：领取人 `used_count + 1`、`ordinary_credit + 1`，计数与领取在同一事务内提交。暂无可领内容时领取失败并返回“暂时没有可领取的内容”，不产生任何计数。
+- **内容被领取**：命中普通队列时发布者 `ordinary_rounds + 1`、`ordinary_credit - 1`；命中插队队列时 `boost_rounds + 1`、`priority_credit - 1`。
+- **额度归零**：成员保留在队列原位但被跳过（停泊）；再次领码后从原位置恢复参与。
+- **不能领取自己发布的内容**（选取时跳过本人）。
+- **同一发布者的内容每人只能领取一次**：`activity_claims` 以（领取人、活动类型、发布者）唯一约束记录每次成功领取；记录在领取事务内写入，并发重复领取撞唯一键后整体回滚并跳过该候选人继续查找，不会错误扣减对方额度。
 
 ### Redis 队列结构
 
-每种活动类型分别维护普通队列和插队队列。每个队列由一个 List 和一个 Set 组成：
+每个队列由一个 Sorted Set 和一个计数 Hash 组成：
 
 ```text
-activity_queue:{activityType}:ordinary:list
-activity_queue:{activityType}:ordinary:members
-
-activity_queue:{activityType}:priority:list
-activity_queue:{activityType}:priority:members
-
-activity_queue:{activityType}:seeded
+activity_queue:{activityType}:{queueType}:zset     member = uid，score = ±序号
+activity_queue:{activityType}:{queueType}:counts   hash，uid → 队列计数
+activity_queue:seq                                  全局自增序号（首次使用时按毫秒时间戳播种防回拨）
+activity_queue:{activityType}:seeded                队列已按 MySQL 初始化的标记
 ```
 
-- `list` 保存轮询顺序。领取时使用 Lua 执行 `LPOP` 后 `RPUSH`，形成循环队列。
-- `members` 用于原子防重，保证一个用户在同类队列中最多出现一次。
-- `seeded` 表示该活动类型的 Redis 队列已经根据 MySQL 初始化。
-- 轮询会跳过领取人自己的 UID；队列为空或只有本人时返回空队列。
-- 同一个用户可以同时拥有普通额度和插队额度，因此可以同时存在于两个队列。
+`queueType` 为 `ordinary` 或 `priority`。score 编码承载两个事实：
 
-普通队列入队条件：
+- **绝对值 = 入队序号**，决定 FIFO 位置，一经分配永不改变；额度归零再恢复时仍占原位。
+- **符号 = 参与开关**：正数表示计数 > 0、可被选取；负数表示计数已归零、原地停泊跳过。
 
-```text
-ordinary_credit > 0 AND ordinary_rounds < used_count
-```
+计数加减由 Lua 原子完成，跨越 0 边界时只翻转符号、不触碰位置；选取使用 `ZRANGEBYSCORE (0 +inf LIMIT 0 N` 取最早入队的活跃成员并跳过本人与已领过的发布者，全部操作 O(log N)，停泊的死成员不会阻塞队头。
 
-插队队列入队条件：
+### 候选选择顺序
 
-```text
-priority_credit > 0
-```
-
-相应额度消费至 `0` 后，用户会从该队列的 List 和 Set 中同时删除。成功领码产生的新普通额度会让领取人进入普通队列。
-
-### 候选内容选择顺序
-
-领取流程固定为：
-
-1. 检查领取人已经发布当前活动类型的内容。
-2. 确保 Redis 队列已经从 MySQL 初始化。
-3. 从插队队列循环选择第一个不是领取人自己的 UID。
-4. 插队队列没有可用候选人时，再查询普通队列。
-5. 在 MySQL 事务中重新校验并消费额度，返回候选人的活动内容。
-6. 如果候选记录或额度已经失效，清理 Redis 项并继续查找。
-
-插队队列内部和普通队列内部都是轮询，而不是按剩余额度排序。只要还存在其他用户的有效插队额度，新的领取请求就会优先消费插队队列；插队队列无有效候选人后才会消费普通队列。
+1. 校验领取人已发布当前活动类型的内容。
+2. 确保 Redis 队列已从 MySQL 初始化（未初始化则清空重建）。
+3. 从插队队列选取最早入队的、非本人且未领过的活跃成员。
+4. 插队队列无候选人（为空、只剩本人或都已领过）时落到普通队列。
+5. 在 MySQL 事务中对候选人行加锁、复验额度、写入领取记录并扣减额度，返回其内容。
+6. 候选记录或额度失效时将其移出队列后重试；命中“已领过”时加入排除列表重试（不从队列移除）。
 
 ### Redis 重建与一致性
 
-API 启动时会清空所有活动类型的 Redis 活动队列和 `seeded` 标记。第一次领取时，再按 MySQL 中的实际剩余额度延迟重建队列。这意味着：
-
-- MySQL 数据决定用户是否真正拥有可用额度。
-- Redis 丢失或服务重启不会丢失轮数与额度。
-- Redis 入队失败时会使 `seeded` 失效，后续请求可以重新构建队列。
+API 启动时清空所有活动类型的 Redis 队列和 `seeded` 标记；每个活动第一次领取时按 MySQL 全量重建队列（含每个成员的当前额度）。运行期额度增减的 Redis 操作失败会使 `seeded` 失效，下一次请求触发清空重建自愈。Redis 丢失或重启不会丢失轮数与额度数据。
 
 ### 领取按钮状态
 
-活动详情和领取结果中的 `can_claim` 不依赖 Redis 队列长度，而是直接检查 MySQL 是否存在其他用户的有效内容：
+`can_claim` 只检查 MySQL 中是否存在其他用户发布的当前活动内容，不看额度：
 
 ```text
-uid != 当前用户
-AND (
-  priority_credit > 0
-  OR (ordinary_credit > 0 AND ordinary_rounds < used_count)
-)
+type = 当前活动 AND uid != 当前用户
 ```
 
-没有符合条件的其他用户时——包括队列为空或队列中只有本人——接口返回 `can_claim: false`，前端将“一键领码”按钮置灰。
+只有自己发布时按钮置灰；他人额度耗尽或都已被本人领取时按钮仍可点击，点击后提示暂无可领内容，领取失败、不累计领码次数。
 
 ### 主要实现位置
 
-- `internal/platform/platform.go`：发布入队、插队积分、候选选择、事务更新、可领取状态判断。
-- `internal/queue/activity.go`：Redis List/Set 键、Lua 原子防重、轮询、跳过本人和移除操作。
-- `internal/domain/models.go`：活动轮数、累计次数和剩余额度字段。
-- `internal/database/database.go`：历史轮数修正及普通额度重算迁移。
-- `internal/platform/platform_test.go`：领取计数、额度转移、插队优先、跳过本人和额度耗尽回归测试。
-- `internal/queue/activity_test.go`：Redis 队列轮询、防重、仅本人和重置测试。
+- `internal/platform/platform.go`：领码计数、候选选择、事务与领取记录、可领取状态判断。
+- `internal/queue/activity.go`：ZSet / counts / seq 键、符号位翻转、带排除列表的选取 Lua 脚本。
+- `internal/domain/models.go`：活动额度字段与 `activity_claims` 领取记录模型。
+- `internal/platform/platform_test.go`、`internal/queue/activity_test.go`：冷启动互领、停泊恢复、插队优先、不可重复领取同一发布者等回归测试。
 
 ### 管理端
 

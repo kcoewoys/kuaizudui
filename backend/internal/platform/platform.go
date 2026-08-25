@@ -435,16 +435,13 @@ func (p *Platform) PublishActivity(ctx context.Context, uid, activityType, conte
 	if _, err := p.EnsureUser(ctx, uid); err != nil {
 		return ActivityResult{}, err
 	}
-	// The first publication comes with one free claim credit so a freshly
-	// published member is servable immediately — that is what lets the pool
-	// cold-start: the second publisher can already claim the first one.
-	item := domain.ActivityContent{UID: uid, Type: activityType, Content: content, ClaimCount: 1, OrdinaryCredit: 1}
+	item := domain.ActivityContent{UID: uid, Type: activityType, Content: content}
 	result := p.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&item)
 	if result.Error != nil {
 		return ActivityResult{}, fmt.Errorf("publish activity content: %w", result.Error)
 	}
 	if result.RowsAffected == 0 {
-		// Re-publishing only refreshes the content; the grant applies once.
+		// Re-publishing only refreshes the content.
 		if err := p.db.WithContext(ctx).Model(&domain.ActivityContent{}).
 			Where("uid = ? AND type = ?", uid, activityType).
 			Updates(map[string]any{"content": content, "updated_at": p.now()}).Error; err != nil {
@@ -557,12 +554,13 @@ func (p *Platform) UseActivity(ctx context.Context, uid, activityType string) (A
 		return ActivityUseResult{}, err
 	}
 
-	// Every claim click earns the claimant one ordinary credit even when
-	// nothing is selectable yet: claim clicks are what make a member's content
-	// servable, so the pool bootstraps from the first click.
-	claimant, err := p.earnActivityClaimCredit(ctx, uid, activityType)
-	if err != nil {
-		return ActivityUseResult{}, err
+	// The claim count only rises on a served claim: a click that finds nothing
+	// is a failed claim and leaves every counter untouched. The increment
+	// happens inside the delivery transaction itself.
+	var claimant domain.ActivityContent
+	if err := p.db.WithContext(ctx).Where("uid = ? AND type = ?", uid, activityType).
+		First(&claimant).Error; err != nil {
+		return ActivityUseResult{}, fmt.Errorf("load activity claimant: %w", err)
 	}
 	// Publishers the claimant already received are skipped during selection —
 	// each person's content serves a given claimant at most once.
@@ -593,33 +591,20 @@ func (p *Platform) listActivityClaims(ctx context.Context, claimantUID, activity
 	return publishers, nil
 }
 
-func (p *Platform) earnActivityClaimCredit(ctx context.Context, uid, activityType string) (domain.ActivityContent, error) {
-	var item domain.ActivityContent
-	err := p.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("uid = ? AND type = ?", uid, activityType).First(&item).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return domain.ErrNotFound
-			}
-			return err
-		}
-		item.ClaimCount++
-		item.OrdinaryCredit++
-		return tx.Model(&item).UpdateColumns(map[string]any{
-			"ordinary_credit": item.OrdinaryCredit,
-			"used_count":      item.ClaimCount,
-		}).Error
-	})
-	if err != nil {
-		return domain.ActivityContent{}, err
+// bumpActivityClaimCount charges one claim to the claimant inside the delivery
+// transaction, so a claim that never serves content never counts.
+func bumpActivityClaimCount(tx *gorm.DB, claimant *domain.ActivityContent) error {
+	if err := tx.Model(&domain.ActivityContent{}).
+		Where("uid = ? AND type = ?", claimant.UID, claimant.Type).
+		Updates(map[string]any{
+			"ordinary_credit": gorm.Expr("ordinary_credit + 1"),
+			"used_count":      gorm.Expr("used_count + 1"),
+		}).Error; err != nil {
+		return err
 	}
-	queueCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
-	defer cancel()
-	if err := p.activity.AddOrdinary(queueCtx, activityType, uid, 1); err != nil {
-		slog.WarnContext(ctx, "add earned activity credit failed", "type", activityType, "error", err)
-		_ = p.activity.InvalidateSeed(queueCtx, activityType)
-	}
-	return item, nil
+	claimant.ClaimCount++
+	claimant.OrdinaryCredit++
+	return nil
 }
 
 func (p *Platform) ensureActivityQueues(ctx context.Context, activityType string) error {
@@ -729,10 +714,19 @@ func (p *Platform) deliverCursorActivity(
 			return err
 		}
 		claimRecord := domain.ActivityClaim{ClaimantUID: claimant.UID, PublisherUID: candidate.UID, Type: activityType}
-		return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&claimRecord).Error
+		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&claimRecord).Error; err != nil {
+			return err
+		}
+		return bumpActivityClaimCount(tx, &claimant)
 	})
 	if err != nil {
 		return ActivityUseResult{}, err
+	}
+	queueContext, cancelQueue := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+	defer cancelQueue()
+	if err := p.activity.AddOrdinary(queueContext, activityType, claimant.UID, 1); err != nil {
+		slog.WarnContext(ctx, "add earned activity credit failed", "type", activityType, "error", err)
+		_ = p.activity.InvalidateSeed(queueContext, activityType)
 	}
 	notifyContext, cancelNotify := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
 	defer cancelNotify()
@@ -782,7 +776,7 @@ func (p *Platform) deliverPriorityActivity(
 		}).Error; err != nil {
 			return err
 		}
-		return nil
+		return bumpActivityClaimCount(tx, &claimant)
 	})
 	if err != nil {
 		return ActivityUseResult{}, err
@@ -791,6 +785,10 @@ func (p *Platform) deliverPriorityActivity(
 	defer cancelQueue()
 	if err := p.activity.AddPriority(queueContext, activityType, candidateUID, -1); err != nil {
 		slog.WarnContext(ctx, "consume priority activity credit failed", "type", activityType, "error", err)
+		_ = p.activity.InvalidateSeed(queueContext, activityType)
+	}
+	if err := p.activity.AddOrdinary(queueContext, activityType, claimant.UID, 1); err != nil {
+		slog.WarnContext(ctx, "add earned activity credit failed", "type", activityType, "error", err)
 		_ = p.activity.InvalidateSeed(queueContext, activityType)
 	}
 	notifyContext, cancelNotify := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
