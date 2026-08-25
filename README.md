@@ -47,6 +47,6 @@ npm run build
 
 # 后端
 
-后端采用 Go、Gin、Gorm、MySQL 和 Redis，包含配置文件、Docker Compose、自动数据库迁移、Redis Lua 福袋队列、用户活动、积分兑换及管理员接口。运行说明和完整接口表见 [`backend/README.md`](backend/README.md)。
+后端采用 Go、Gin、Gorm、MySQL 和 Redis，包含配置文件、Docker Compose、自动数据库迁移、Redis Lua 福袋队列、用户活动、积分兑换及管理员接口。运行说明、完整接口表和数据存储设计（每张 MySQL 表的用途、全部 Redis 键与每日重置）见 [`backend/README.md`](backend/README.md)。
 
 管理员手机号配置在 `backend/config/config.yaml` 的 `business.admin_phone`。部署环境也可通过 `APP_ADMIN_PHONE` 覆盖；正确号码不会写入前端代码。

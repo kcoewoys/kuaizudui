@@ -12,7 +12,7 @@ Docker Compose 会把本机的 `config/config.yaml` 只读挂载到 API 容器�
 - MySQL DSN 与连接池
 - Redis 地址、密码、库号和超时
 - 管理员手机号、二维码上传目录与大小限制、活动内容长度和福袋码长度
-- 首次访问、福袋占用和管理员会话有效期
+- 首次访问、福袋占用、管理员会话有效期和每日重置时间
 - 管理员令牌签名密钥
 
 部署时可以用以下环境变量覆盖敏感或环境相关字段：
@@ -63,6 +63,49 @@ curl http://127.0.0.1:8080/health/ready
 curl -i http://127.0.0.1:8080/api/v1/user/info
 curl -H 'X-UID: 上一步返回的值' http://127.0.0.1:8080/api/v1/points
 ```
+
+## 存储设计
+
+MySQL 是最终事实来源：账号、积分、轮数与额度、福袋码状态都落库。Redis 只保存可重建或可过期的调度态（队列顺序、占用锁、会话、标记），任何 Redis 数据丢失都可以从 MySQL 自愈或按 TTL 自然过期。
+
+### MySQL 表
+
+| 表 | 用途 | 每日重置 |
+| --- | --- | --- |
+| `users` | 匿名账号：UID（唯一）、绑定的手机号（唯一）、邀请人 UID、积分余额 | 保留 |
+| `activity_contents` | 每用户每活动一条：发布内容与全部轮数/额度计数（字段含义见「活动领取双队列」） | 清空 |
+| `activity_claims` | 领取记录，(领取人, 活动类型, 发布者) 唯一，保证同一发布者的内容每人只领一次 | 清空 |
+| `lucky_codes` | 福袋码：码值唯一、状态（available/used）、使用者与使用时间 | 清空 |
+| `point_records` | 积分流水：每笔加/扣积分的来源与说明 | 保留 |
+| `recharge_records` | 管理员充值流水 | 保留 |
+| `exchange_codes` | 积分兑换码与使用状态 | 保留 |
+| `notices` | 公告，按 `type` 主键 | 保留 |
+| `settings` | 系统设置：数据库迁移标记、群二维码文件名（`group_qrcode`）、每日重置标记（`daily_reset.last_run`） | 保留 |
+| `feedback` | 用户反馈 | 保留 |
+
+### Redis 键
+
+| 键 | 类型 | 用途 |
+| --- | --- | --- |
+| `activity_queue:{type}:ordinary:zset`、`activity_queue:{type}:priority:zset` | ZSet | 队列成员（member = uid）；score 绝对值 = 入队序号定 FIFO 位，符号 = 额度是否大于 0 |
+| `activity_queue:{type}:ordinary:counts`、`activity_queue:{type}:priority:counts` | Hash | uid → 队列剩余额度 |
+| `activity_queue:{type}:cursor` | String | 普通队列共享 FIFO 轮询游标 |
+| `activity_queue:seq` | String | 全局入队序号发号器（首次使用时按毫秒时间戳播种防回拨） |
+| `activity_queue:{type}:seeded` | String | 队列已按 MySQL 播种的标记 |
+| `lucky_queue` | List | 待领取福袋码（`id\|uid`），LPUSH + RPOP 实现 FIFO，Lua 原子跳过本人并防重 |
+| `lucky_used:{id}` | String | 福袋码领取占用，TTL = `lucky_claim_ttl`（默认 24h） |
+| `admin_session:{token}` | String | 管理员会话（值 = 手机号），TTL = `admin_session_ttl`（默认 12h） |
+| `first_visit:{uid}` | String | 首次访问标记，TTL = `first_visit_ttl`（默认 365 天） |
+| `activity_updates:{uid}` | Pub/Sub | SSE 实时通知频道，不落盘、重置无影响 |
+
+### 每日重置
+
+`business.daily_reset_time`（默认 `00:00`，服务器本地时区）每天触发一次，动作有两步：
+
+1. `FLUSHDB` 清空整个 Redis 库——活动队列、福袋队列与占用、管理员会话、首访标记全部失效。
+2. 事务删除 `activity_contents`、`activity_claims`、`lucky_codes` 三张当日业务表的全部行。
+
+执行标记写在 MySQL `settings` 表（`daily_reset.last_run` = 日期）：服务重启不会把当天已重置过的再清一遍；重置时刻服务恰好不在运行，下次启动会补跑；执行失败每分钟重试，不会跳过当天。后果需要知晓：管理员每天需重新登录；首访标记每日清空，每个用户每天都会再次判定为首次访问；未用完的插队额度随当日数据作废、不退积分；已使用福袋码的历史不留痕。
 
 ## 接口
 
@@ -143,6 +186,7 @@ curl -H 'X-UID: 上一步返回的值' http://127.0.0.1:8080/api/v1/points
 ```text
 activity_queue:{activityType}:{queueType}:zset     member = uid，score = ±序号
 activity_queue:{activityType}:{queueType}:counts   hash，uid → 队列计数
+activity_queue:{activityType}:cursor               普通队列的共享 FIFO 游标
 activity_queue:seq                                  全局自增序号（首次使用时按毫秒时间戳播种防回拨）
 activity_queue:{activityType}:seeded                队列已按 MySQL 初始化的标记
 ```
@@ -152,7 +196,7 @@ activity_queue:{activityType}:seeded                队列已按 MySQL 初始化
 - **绝对值 = 入队序号**，决定 FIFO 位置，一经分配永不改变；额度归零再恢复时仍占原位。
 - **符号 = 参与开关**：正数表示计数 > 0、可被选取；负数表示计数已归零、原地停泊跳过。
 
-计数加减由 Lua 原子完成，跨越 0 边界时只翻转符号、不触碰位置；选取使用 `ZRANGEBYSCORE (0 +inf LIMIT 0 N` 取最早入队的活跃成员并跳过本人与已领过的发布者，全部操作 O(log N)，停泊的死成员不会阻塞队头。
+计数加减由 Lua 原子完成，跨越 0 边界时只翻转符号、不触碰位置。插队队列选取使用 `ZRANGEBYSCORE (0 +inf LIMIT 0 N` 取最早入队的活跃成员并跳过本人与已领过的发布者；普通队列由共享游标 `cursor` 按发布顺序轮转——跳过本人与已领过的发布者，走到队尾后回到队首继续循环，成员不会被消费或移除，同一队列可以永久循环发放。全部操作 O(log N)，停泊的死成员不会阻塞队头。
 
 ### 候选选择顺序
 
@@ -165,7 +209,7 @@ activity_queue:{activityType}:seeded                队列已按 MySQL 初始化
 
 ### Redis 重建与一致性
 
-API 启动时清空所有活动类型的 Redis 队列和 `seeded` 标记；每个活动第一次领取时按 MySQL 全量重建队列（含每个成员的当前额度）。运行期额度增减的 Redis 操作失败会使 `seeded` 失效，下一次请求触发清空重建自愈。Redis 丢失或重启不会丢失轮数与额度数据。
+API 启动时清空所有活动类型的 Redis 队列和 `seeded` 标记；每个活动第一次领取时按 MySQL 全量重建队列（含每个成员的当前额度）。运行期额度增减的 Redis 操作失败会使 `seeded` 失效，下一次请求触发清空重建自愈。Redis 丢失或重启不会丢失轮数与额度数据。每日重置（见「存储设计」）会整库清空 Redis 并删除当日业务表，队列随后从空表重新播种，等价于一次彻底的冷启动。
 
 ### 领取按钮状态
 
