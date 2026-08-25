@@ -89,6 +89,15 @@ func (s *Server) listLucky(c *gin.Context) {
 	success(c, gin.H{"items": result, "count": len(result)})
 }
 
+func (s *Server) luckyStats(c *gin.Context) {
+	result, err := s.platform.LuckyStats(c.Request.Context(), uid(c))
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	success(c, result)
+}
+
 func (s *Server) receiveLucky(c *gin.Context) {
 	result, err := s.platform.ReceiveLucky(c.Request.Context(), uid(c))
 	if err != nil {

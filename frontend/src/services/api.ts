@@ -66,6 +66,11 @@ export interface LuckyResult {
   created_at: string
 }
 
+export interface LuckyStats {
+  claimed_today: number
+  published_today: number
+}
+
 export interface PointRecord {
   id: number
   uid: string
@@ -185,6 +190,7 @@ export const api = {
   },
   lucky: {
     list: (limit = 20) => request<{ items: LuckyListItem[]; count: number }>(`/lucky/list?limit=${limit}`),
+    stats: () => request<LuckyStats>('/lucky/stats'),
     publish: (code: string) => request<LuckyResult>('/lucky/publish', json({ code })),
     receive: () => request<LuckyResult>('/lucky/receive', { method: 'POST' }),
     use: (id: number) => request<LuckyResult>('/lucky/use', json({ id })),

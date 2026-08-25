@@ -94,13 +94,13 @@ const {
       <div class="stat-grid">
         <div class="stat-block stat-block--blue">
           <UsersRound :size="17" />
-          <span>普通轮数</span>
-          <strong aria-live="polite" aria-atomic="true">{{ state.ordinaryRounds }} <small>轮 / {{ state.claimCount }} 次领码</small></strong>
+          <span>普通队列</span>
+          <strong aria-live="polite" aria-atomic="true">{{ state.ordinaryRounds }} <small>/ {{ state.claimCount }} 次领码</small></strong>
         </div>
         <div class="stat-block stat-block--mint">
           <Bolt :size="17" />
-          <span>插队轮数</span>
-          <strong aria-live="polite" aria-atomic="true">{{ state.priorityRounds }} <small>轮 / {{ state.pointsCommitted }} 积分</small></strong>
+          <span>插队队列</span>
+          <strong aria-live="polite" aria-atomic="true">{{ state.priorityRounds }} <small>/ {{ state.pointsCommitted }} 积分</small></strong>
         </div>
       </div>
 

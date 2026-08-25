@@ -61,6 +61,7 @@ func NewRouter(app *platform.Platform, db *gorm.DB, redisClient redis.UniversalC
 
 		v1.POST("/lucky/publish", server.publishLucky)
 		v1.GET("/lucky/list", server.listLucky)
+		v1.GET("/lucky/stats", server.luckyStats)
 		v1.POST("/lucky/receive", server.receiveLucky)
 		v1.POST("/lucky/use", server.useLucky)
 

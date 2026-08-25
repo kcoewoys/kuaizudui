@@ -9,7 +9,7 @@ import PointsSourceModal from '@/components/PointsSourceModal.vue'
 import RedeemCodeModal from '@/components/RedeemCodeModal.vue'
 import ToastMessage from '@/components/ToastMessage.vue'
 import { activityConfigs, type InviteActivityType } from '@/domain/activities'
-import { api, friendlyApiError, type ActivityStateResponse } from '@/services/api'
+import { api, friendlyApiError, type ActivityStateResponse, type LuckyStats } from '@/services/api'
 import { applyPoints, bindUserPhone, captureReferralFromUrl, loadUser, userState } from '@/services/session'
 import { copyText } from '@/utils/clipboard'
 
@@ -28,7 +28,7 @@ const phoneDraft = ref('')
 const phoneError = ref('')
 const toast = ref('')
 const loading = ref(true)
-const luckyCount = ref(0)
+const luckyStats = ref<LuckyStats>({ claimed_today: 0, published_today: 0 })
 const stats = ref<ProfileActivityStat[]>([])
 
 const activityTypes = Object.keys(activityConfigs) as InviteActivityType[]
@@ -53,7 +53,7 @@ async function loadProfile() {
     phoneDraft.value = userState.phone
     const [activities, lucky] = await Promise.all([
       Promise.all(activityTypes.map((type) => api.activity.detail(type))),
-      api.lucky.list(50),
+      api.lucky.stats(),
     ])
     stats.value = activities.map((state) => ({
       type: state.type,
@@ -61,7 +61,7 @@ async function loadProfile() {
       path: activityConfigs[state.type].path,
       state,
     }))
-    luckyCount.value = lucky.count
+    luckyStats.value = lucky
   } catch (loadError) {
     showToast(friendlyApiError(loadError))
   } finally {
@@ -161,7 +161,7 @@ onMounted(loadProfile)
       </div>
       <template v-else>
         <button class="profile-stat" type="button" @click="router.push('/lucky-team')">
-          <span>福袋组队</span><strong>0 / {{ luckyCount }}</strong><ChevronRight :size="18" />
+          <span>福袋组队</span><strong>{{ luckyStats.claimed_today }} / {{ luckyStats.published_today }}</strong><ChevronRight :size="18" />
         </button>
         <button v-for="item in stats" :key="item.type" class="profile-stat" type="button" @click="router.push(item.path)">
           <span>{{ item.title }}</span>

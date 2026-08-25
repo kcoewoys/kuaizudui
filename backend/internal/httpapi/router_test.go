@@ -20,7 +20,6 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	"github.com/eaok-cn/kuaizudui/backend/internal/config"
 	"github.com/eaok-cn/kuaizudui/backend/internal/database"
-	"github.com/eaok-cn/kuaizudui/backend/internal/domain"
 	"github.com/eaok-cn/kuaizudui/backend/internal/platform"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
@@ -60,7 +59,7 @@ func testRouterComponents(t *testing.T) (http.Handler, *gorm.DB, *redis.Client) 
 }
 
 func TestIdentityAndActivityRoundTrip(t *testing.T) {
-	router, db, _ := testRouterComponents(t)
+	router, _, _ := testRouterComponents(t)
 
 	info := httptest.NewRecorder()
 	router.ServeHTTP(info, httptest.NewRequest(http.MethodGet, "/api/v1/user/info", nil))
@@ -88,9 +87,6 @@ func TestIdentityAndActivityRoundTrip(t *testing.T) {
 	request.Header.Set("X-UID", "activity-user-b")
 	router.ServeHTTP(secondPublish, request)
 	require.Equal(t, http.StatusOK, secondPublish.Code)
-	require.NoError(t, db.Model(&domain.ActivityContent{}).
-		Where("uid = ? AND type = ?", "activity-user-b", domain.ActivityCashMonopoly).
-		Updates(map[string]any{"ordinary_credit": 1, "used_count": 1}).Error)
 
 	detail := httptest.NewRecorder()
 	request = httptest.NewRequest(http.MethodGet, "/api/v1/activity/detail?type=cash_monopoly", nil)
@@ -107,11 +103,12 @@ func TestIdentityAndActivityRoundTrip(t *testing.T) {
 	require.Equal(t, http.StatusOK, claim.Code)
 	require.Contains(t, claim.Body.String(), `"content":"another user's invitation"`)
 	require.Contains(t, claim.Body.String(), `"source":"ordinary"`)
-	require.Contains(t, claim.Body.String(), `"claim_count":1`)
+	// One publication grant plus this claim click.
+	require.Contains(t, claim.Body.String(), `"claim_count":2`)
 }
 
 func TestActivityEventsStreamUpdatesThePublisherAfterAClaim(t *testing.T) {
-	router, db, _ := testRouterComponents(t)
+	router, _, _ := testRouterComponents(t)
 	server := httptest.NewServer(router)
 	t.Cleanup(server.Close)
 
@@ -130,9 +127,6 @@ func TestActivityEventsStreamUpdatesThePublisherAfterAClaim(t *testing.T) {
 
 	publish("event-owner", "owner invitation")
 	publish("event-claimant", "claimant invitation")
-	require.NoError(t, db.Model(&domain.ActivityContent{}).
-		Where("uid = ? AND type = ?", "event-owner", domain.ActivityBuyFood).
-		Updates(map[string]any{"ordinary_credit": 1, "used_count": 1}).Error)
 
 	streamContext, cancelStream := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancelStream()

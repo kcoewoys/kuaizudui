@@ -34,6 +34,7 @@ type LuckyCode struct {
 	UID       string     `gorm:"size:40;index;not null" json:"uid"`
 	Code      string     `gorm:"size:9;uniqueIndex;not null" json:"code"`
 	Status    string     `gorm:"size:20;index;not null;default:available" json:"status"`
+	UsedUID   *string    `gorm:"size:40;index" json:"used_uid,omitempty"`
 	CreatedAt time.Time  `json:"created_at"`
 	UsedAt    *time.Time `json:"used_at,omitempty"`
 }
@@ -51,6 +52,16 @@ type ActivityContent struct {
 	ClaimCount      int64     `gorm:"column:used_count;not null;default:0" json:"claim_count"`
 	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
+}
+
+// ActivityClaim records that a claimant has already received a publisher's
+// content within an activity; the unique index enforces "one serve per pair".
+type ActivityClaim struct {
+	ID           uint      `gorm:"primaryKey" json:"id"`
+	ClaimantUID  string    `gorm:"size:40;uniqueIndex:claimant_activity_publisher;not null" json:"claimant_uid"`
+	Type         string    `gorm:"size:30;uniqueIndex:claimant_activity_publisher;not null" json:"type"`
+	PublisherUID string    `gorm:"size:40;uniqueIndex:claimant_activity_publisher;not null" json:"publisher_uid"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 type Notice struct {

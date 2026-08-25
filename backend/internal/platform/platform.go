@@ -31,6 +31,7 @@ const (
 var phonePattern = regexp.MustCompile(`^1\d{10}$`)
 
 var errStaleActivityQueueEntry = errors.New("stale activity queue entry")
+var errActivityAlreadyClaimed = errors.New("activity publisher already claimed by claimant")
 
 type Platform struct {
 	db       *gorm.DB
@@ -63,6 +64,11 @@ type LuckyResult struct {
 	ID        uint      `json:"id"`
 	Code      string    `json:"code"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+type LuckyStats struct {
+	ClaimedToday   int64 `json:"claimed_today"`
+	PublishedToday int64 `json:"published_today"`
 }
 
 type ActivityResult struct {
@@ -321,6 +327,23 @@ func (p *Platform) ListLucky(ctx context.Context, uid string, limit int) ([]Luck
 	return items, nil
 }
 
+func (p *Platform) LuckyStats(ctx context.Context, uid string) (LuckyStats, error) {
+	now := p.now()
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	var stats LuckyStats
+	if err := p.db.WithContext(ctx).Model(&domain.LuckyCode{}).
+		Where("used_uid = ? AND used_at >= ?", uid, dayStart).
+		Count(&stats.ClaimedToday).Error; err != nil {
+		return LuckyStats{}, fmt.Errorf("count claimed lucky codes: %w", err)
+	}
+	if err := p.db.WithContext(ctx).Model(&domain.LuckyCode{}).
+		Where("uid = ? AND created_at >= ?", uid, dayStart).
+		Count(&stats.PublishedToday).Error; err != nil {
+		return LuckyStats{}, fmt.Errorf("count published lucky codes: %w", err)
+	}
+	return stats, nil
+}
+
 func (p *Platform) ReceiveLucky(ctx context.Context, uid string) (LuckyResult, error) {
 	if _, err := p.EnsureUser(ctx, uid); err != nil {
 		return LuckyResult{}, err
@@ -342,7 +365,7 @@ func (p *Platform) ReceiveLucky(ctx context.Context, uid string) (LuckyResult, e
 				return domain.ErrCannotUseOwn
 			}
 			now := p.now()
-			return tx.Model(&item).Updates(map[string]any{"status": domain.LuckyStatusUsed, "used_at": now}).Error
+			return tx.Model(&item).Updates(map[string]any{"status": domain.LuckyStatusUsed, "used_at": now, "used_uid": uid}).Error
 		})
 		if errors.Is(err, domain.ErrAlreadyUsed) || errors.Is(err, gorm.ErrRecordNotFound) {
 			_ = p.lucky.Release(ctx, entry, false)
@@ -389,7 +412,7 @@ func (p *Platform) UseLucky(ctx context.Context, uid string, id uint) (LuckyResu
 	now := p.now()
 	result := p.db.WithContext(ctx).Model(&domain.LuckyCode{}).
 		Where("id = ? AND status = ?", id, domain.LuckyStatusAvailable).
-		Updates(map[string]any{"status": domain.LuckyStatusUsed, "used_at": now})
+		Updates(map[string]any{"status": domain.LuckyStatusUsed, "used_at": now, "used_uid": uid})
 	if result.Error != nil {
 		_ = p.lucky.Release(ctx, entry, false)
 		return LuckyResult{}, fmt.Errorf("use lucky code: %w", result.Error)
@@ -412,28 +435,33 @@ func (p *Platform) PublishActivity(ctx context.Context, uid, activityType, conte
 	if _, err := p.EnsureUser(ctx, uid); err != nil {
 		return ActivityResult{}, err
 	}
-	item := domain.ActivityContent{UID: uid, Type: activityType, Content: content}
-	err := p.db.WithContext(ctx).Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "uid"}, {Name: "type"}},
-		DoUpdates: clause.Assignments(map[string]any{"content": content, "updated_at": p.now()}),
-	}).Create(&item).Error
-	if err != nil {
-		return ActivityResult{}, fmt.Errorf("publish activity content: %w", err)
+	// The first publication comes with one free claim credit so a freshly
+	// published member is servable immediately — that is what lets the pool
+	// cold-start: the second publisher can already claim the first one.
+	item := domain.ActivityContent{UID: uid, Type: activityType, Content: content, ClaimCount: 1, OrdinaryCredit: 1}
+	result := p.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&item)
+	if result.Error != nil {
+		return ActivityResult{}, fmt.Errorf("publish activity content: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		// Re-publishing only refreshes the content; the grant applies once.
+		if err := p.db.WithContext(ctx).Model(&domain.ActivityContent{}).
+			Where("uid = ? AND type = ?", uid, activityType).
+			Updates(map[string]any{"content": content, "updated_at": p.now()}).Error; err != nil {
+			return ActivityResult{}, fmt.Errorf("update activity content: %w", err)
+		}
 	}
 	if err := p.db.WithContext(ctx).Where("uid = ? AND type = ?", uid, activityType).First(&item).Error; err != nil {
 		return ActivityResult{}, fmt.Errorf("load activity content: %w", err)
 	}
-	if item.OrdinaryCredit > 0 && item.OrdinaryRounds < item.ClaimCount {
-		if err := p.activity.EnqueueOrdinary(ctx, activityType, uid); err != nil {
-			_ = p.activity.InvalidateSeed(ctx, activityType)
-			return ActivityResult{}, err
-		}
-	} else if err := p.activity.RemoveOrdinary(ctx, activityType, uid); err != nil {
+	// Publishing keeps the member parked in the ordinary queue even with a zero
+	// count; the count only rises again through claim clicks.
+	if err := p.activity.EnqueueOrdinary(ctx, activityType, uid, item.OrdinaryCredit); err != nil {
 		_ = p.activity.InvalidateSeed(ctx, activityType)
 		return ActivityResult{}, err
 	}
 	if item.PriorityCredit > 0 {
-		if err := p.activity.EnqueuePriority(ctx, activityType, uid); err != nil {
+		if err := p.activity.EnqueuePriority(ctx, activityType, uid, item.PriorityCredit); err != nil {
 			_ = p.activity.InvalidateSeed(ctx, activityType)
 			return ActivityResult{}, err
 		}
@@ -499,10 +527,16 @@ func (p *Platform) BoostActivity(ctx context.Context, uid, activityType string, 
 		if err := tx.Create(&record).Error; err != nil {
 			return err
 		}
-		return p.activity.EnqueuePriority(ctx, activityType, uid)
+		return nil
 	})
 	if err != nil {
 		return ActivityResult{}, err
+	}
+	queueCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+	defer cancel()
+	if err := p.activity.AddPriority(queueCtx, activityType, uid, points); err != nil {
+		slog.WarnContext(ctx, "add priority activity credit failed", "type", activityType, "error", err)
+		_ = p.activity.InvalidateSeed(queueCtx, activityType)
 	}
 	return p.ActivityDetail(ctx, uid, activityType)
 }
@@ -523,16 +557,69 @@ func (p *Platform) UseActivity(ctx context.Context, uid, activityType string) (A
 		return ActivityUseResult{}, err
 	}
 
-	if result, ok, err := p.claimPriorityActivity(ctx, uid, activityType); err != nil {
+	// Every claim click earns the claimant one ordinary credit even when
+	// nothing is selectable yet: claim clicks are what make a member's content
+	// servable, so the pool bootstraps from the first click.
+	claimant, err := p.earnActivityClaimCredit(ctx, uid, activityType)
+	if err != nil {
+		return ActivityUseResult{}, err
+	}
+	// Publishers the claimant already received are skipped during selection —
+	// each person's content serves a given claimant at most once.
+	claimed, err := p.listActivityClaims(ctx, uid, activityType)
+	if err != nil {
+		return ActivityUseResult{}, err
+	}
+
+	if result, ok, err := p.claimPriorityActivity(ctx, claimant, activityType, claimed); err != nil {
 		return ActivityUseResult{}, err
 	} else if ok {
 		return p.activityUseResultWithAvailability(ctx, uid, result)
 	}
-	result, err := p.claimOrdinaryActivity(ctx, uid, activityType)
+	result, err := p.claimCursorActivity(ctx, claimant, activityType, claimed)
 	if err != nil {
 		return ActivityUseResult{}, err
 	}
 	return p.activityUseResultWithAvailability(ctx, uid, result)
+}
+
+func (p *Platform) listActivityClaims(ctx context.Context, claimantUID, activityType string) ([]string, error) {
+	var publishers []string
+	if err := p.db.WithContext(ctx).Model(&domain.ActivityClaim{}).
+		Where("claimant_uid = ? AND type = ?", claimantUID, activityType).
+		Order("id ASC").Pluck("publisher_uid", &publishers).Error; err != nil {
+		return nil, fmt.Errorf("list activity claims: %w", err)
+	}
+	return publishers, nil
+}
+
+func (p *Platform) earnActivityClaimCredit(ctx context.Context, uid, activityType string) (domain.ActivityContent, error) {
+	var item domain.ActivityContent
+	err := p.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("uid = ? AND type = ?", uid, activityType).First(&item).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return domain.ErrNotFound
+			}
+			return err
+		}
+		item.ClaimCount++
+		item.OrdinaryCredit++
+		return tx.Model(&item).UpdateColumns(map[string]any{
+			"ordinary_credit": item.OrdinaryCredit,
+			"used_count":      item.ClaimCount,
+		}).Error
+	})
+	if err != nil {
+		return domain.ActivityContent{}, err
+	}
+	queueCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+	defer cancel()
+	if err := p.activity.AddOrdinary(queueCtx, activityType, uid, 1); err != nil {
+		slog.WarnContext(ctx, "add earned activity credit failed", "type", activityType, "error", err)
+		_ = p.activity.InvalidateSeed(queueCtx, activityType)
+	}
+	return item, nil
 }
 
 func (p *Platform) ensureActivityQueues(ctx context.Context, activityType string) error {
@@ -543,18 +630,19 @@ func (p *Platform) ensureActivityQueues(ctx context.Context, activityType string
 	if seeded {
 		return nil
 	}
+	if err := p.activity.Flush(ctx, activityType); err != nil {
+		return err
+	}
 	var items []domain.ActivityContent
 	if err := p.db.WithContext(ctx).Where("type = ?", activityType).Order("id ASC").Find(&items).Error; err != nil {
 		return fmt.Errorf("load activity queue seed: %w", err)
 	}
 	for _, item := range items {
-		if item.OrdinaryCredit > 0 && item.OrdinaryRounds < item.ClaimCount {
-			if err := p.activity.EnqueueOrdinary(ctx, activityType, item.UID); err != nil {
-				return err
-			}
+		if err := p.activity.EnqueueOrdinary(ctx, activityType, item.UID, item.OrdinaryCredit); err != nil {
+			return err
 		}
 		if item.PriorityCredit > 0 {
-			if err := p.activity.EnqueuePriority(ctx, activityType, item.UID); err != nil {
+			if err := p.activity.EnqueuePriority(ctx, activityType, item.UID, item.PriorityCredit); err != nil {
 				return err
 			}
 		}
@@ -562,16 +650,21 @@ func (p *Platform) ensureActivityQueues(ctx context.Context, activityType string
 	return p.activity.MarkSeeded(ctx, activityType)
 }
 
-func (p *Platform) claimPriorityActivity(ctx context.Context, uid, activityType string) (ActivityUseResult, bool, error) {
+func (p *Platform) claimPriorityActivity(ctx context.Context, claimant domain.ActivityContent, activityType string, claimed []string) (ActivityUseResult, bool, error) {
+	excluded := append([]string(nil), claimed...)
 	for attempt := 0; attempt < maxActivityQueueAttempts; attempt++ {
-		candidateUID, err := p.activity.NextPriority(ctx, activityType, uid)
+		candidateUID, err := p.activity.NextPriority(ctx, activityType, claimant.UID, excluded)
 		if errors.Is(err, domain.ErrQueueEmpty) {
 			return ActivityUseResult{}, false, nil
 		}
 		if err != nil {
 			return ActivityUseResult{}, false, err
 		}
-		result, credit, err := p.deliverActivity(ctx, uid, candidateUID, activityType, "priority")
+		result, err := p.deliverPriorityActivity(ctx, claimant, candidateUID, activityType)
+		if errors.Is(err, errActivityAlreadyClaimed) {
+			excluded = append(excluded, candidateUID)
+			continue
+		}
 		if errors.Is(err, errStaleActivityQueueEntry) {
 			if removeErr := p.activity.RemovePriority(ctx, activityType, candidateUID); removeErr != nil {
 				return ActivityUseResult{}, false, removeErr
@@ -581,21 +674,23 @@ func (p *Platform) claimPriorityActivity(ctx context.Context, uid, activityType 
 		if err != nil {
 			return ActivityUseResult{}, false, err
 		}
-		if credit == 0 {
-			_ = p.activity.RemovePriority(ctx, activityType, candidateUID)
-		}
 		return result, true, nil
 	}
 	return ActivityUseResult{}, false, nil
 }
 
-func (p *Platform) claimOrdinaryActivity(ctx context.Context, uid, activityType string) (ActivityUseResult, error) {
+// claimCursorActivity serves ordinary claims through the activity's FIFO
+// cursor: one shared position that walks the queue in publish order, skips the
+// claimant themselves, prefers publishers this claimant has not received yet,
+// and wraps back to the oldest entry once the end is reached — entries are
+// never consumed or parked, so the queue keeps cycling forever.
+func (p *Platform) claimCursorActivity(ctx context.Context, claimant domain.ActivityContent, activityType string, claimed []string) (ActivityUseResult, error) {
 	for attempt := 0; attempt < maxActivityQueueAttempts; attempt++ {
-		candidateUID, err := p.activity.NextOrdinary(ctx, activityType, uid)
+		candidateUID, err := p.activity.NextByCursor(ctx, activityType, claimant.UID, claimed)
 		if err != nil {
 			return ActivityUseResult{}, err
 		}
-		result, credit, err := p.deliverActivity(ctx, uid, candidateUID, activityType, "ordinary")
+		result, err := p.deliverCursorActivity(ctx, claimant, candidateUID, activityType)
 		if errors.Is(err, errStaleActivityQueueEntry) {
 			if removeErr := p.activity.RemoveOrdinary(ctx, activityType, candidateUID); removeErr != nil {
 				return ActivityUseResult{}, removeErr
@@ -605,100 +700,109 @@ func (p *Platform) claimOrdinaryActivity(ctx context.Context, uid, activityType 
 		if err != nil {
 			return ActivityUseResult{}, err
 		}
-		if credit == 0 {
-			_ = p.activity.RemoveOrdinary(ctx, activityType, candidateUID)
-		}
 		return result, nil
 	}
 	return ActivityUseResult{}, domain.ErrQueueEmpty
 }
 
-func (p *Platform) deliverActivity(
+// deliverCursorActivity hands the cursor-selected publisher's content to the
+// claimant. Cycling means a publisher can serve the same claimant again after
+// a full lap, so the claim record is bookkeeping (and input for priority
+// exclusion) rather than a uniqueness gate, and no credit is consumed — the
+// queue never drains.
+func (p *Platform) deliverCursorActivity(
 	ctx context.Context,
-	claimantUID, candidateUID, activityType, source string,
-) (ActivityUseResult, int64, error) {
-	var delivered ActivityUseResult
-	var remainingCredit int64
+	claimant domain.ActivityContent,
+	candidateUID, activityType string,
+) (ActivityUseResult, error) {
+	var candidate domain.ActivityContent
 	err := p.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var items []domain.ActivityContent
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("type = ? AND uid IN ?", activityType, []string{claimantUID, candidateUID}).
-			Order("uid ASC").Find(&items).Error; err != nil {
-			return err
-		}
-		var claimant, candidate *domain.ActivityContent
-		for index := range items {
-			switch items[index].UID {
-			case claimantUID:
-				claimant = &items[index]
-			case candidateUID:
-				candidate = &items[index]
-			}
-		}
-		if claimant == nil {
-			return domain.ErrNotFound
-		}
-		if candidate == nil {
-			return errStaleActivityQueueEntry
-		}
-
-		claimant.ClaimCount++
-		claimant.OrdinaryCredit++
-		if source == "priority" {
-			if candidate.PriorityCredit <= 0 {
+			Where("uid = ? AND type = ?", candidateUID, activityType).First(&candidate).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return errStaleActivityQueueEntry
 			}
-			candidate.PriorityCredit--
-			candidate.PriorityRounds++
-			if err := tx.Model(candidate).UpdateColumns(map[string]any{
-				"boost_rounds":    candidate.PriorityRounds,
-				"priority_credit": candidate.PriorityCredit,
-			}).Error; err != nil {
-				return err
-			}
-			remainingCredit = candidate.PriorityCredit
-		} else {
-			if candidate.OrdinaryCredit <= 0 || candidate.OrdinaryRounds >= candidate.ClaimCount {
-				return errStaleActivityQueueEntry
-			}
-			candidate.OrdinaryRounds++
-			candidate.OrdinaryCredit--
-			if err := tx.Model(candidate).UpdateColumns(map[string]any{
-				"ordinary_rounds": candidate.OrdinaryRounds,
-				"ordinary_credit": candidate.OrdinaryCredit,
-			}).Error; err != nil {
-				return err
-			}
-			remainingCredit = candidate.OrdinaryCredit
-		}
-		if err := tx.Model(claimant).UpdateColumns(map[string]any{
-			"ordinary_credit": claimant.OrdinaryCredit,
-			"used_count":      claimant.ClaimCount,
-		}).Error; err != nil {
 			return err
 		}
-		delivered = ActivityUseResult{
-			Content: candidate.Content,
-			Source:  source,
-			State:   activityResult(*claimant),
+		candidate.OrdinaryRounds++
+		if err := tx.Model(&candidate).Update("ordinary_rounds", candidate.OrdinaryRounds).Error; err != nil {
+			return err
 		}
-		return nil
+		claimRecord := domain.ActivityClaim{ClaimantUID: claimant.UID, PublisherUID: candidate.UID, Type: activityType}
+		return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&claimRecord).Error
 	})
 	if err != nil {
-		return ActivityUseResult{}, 0, err
+		return ActivityUseResult{}, err
 	}
-	queueContext, cancelQueue := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
-	if err := p.activity.EnqueueOrdinary(queueContext, activityType, claimantUID); err != nil {
-		slog.WarnContext(ctx, "enqueue earned ordinary activity credit failed", "type", activityType, "error", err)
-		_ = p.activity.InvalidateSeed(queueContext, activityType)
-	}
-	cancelQueue()
 	notifyContext, cancelNotify := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
 	defer cancelNotify()
 	if err := p.updates.Publish(notifyContext, candidateUID, activityType); err != nil {
 		slog.WarnContext(ctx, "activity update notification failed", "type", activityType, "error", err)
 	}
-	return delivered, remainingCredit, nil
+	return ActivityUseResult{
+		Content: candidate.Content,
+		Source:  "ordinary",
+		State:   activityResult(claimant),
+	}, nil
+}
+
+func (p *Platform) deliverPriorityActivity(
+	ctx context.Context,
+	claimant domain.ActivityContent,
+	candidateUID, activityType string,
+) (ActivityUseResult, error) {
+	var candidate domain.ActivityContent
+	err := p.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("uid = ? AND type = ?", candidateUID, activityType).First(&candidate).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return errStaleActivityQueueEntry
+			}
+			return err
+		}
+		if candidate.PriorityCredit <= 0 {
+			return errStaleActivityQueueEntry
+		}
+		// Recording the pair inside the transaction makes "one serve per
+		// claimant-publisher" atomic: a duplicate key rolls the credit change
+		// back and the caller moves on to the next candidate.
+		claimRecord := domain.ActivityClaim{ClaimantUID: claimant.UID, PublisherUID: candidate.UID, Type: activityType}
+		claimResult := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&claimRecord)
+		if claimResult.Error != nil {
+			return claimResult.Error
+		}
+		if claimResult.RowsAffected == 0 {
+			return errActivityAlreadyClaimed
+		}
+		candidate.PriorityCredit--
+		candidate.PriorityRounds++
+		if err := tx.Model(&candidate).UpdateColumns(map[string]any{
+			"boost_rounds":    candidate.PriorityRounds,
+			"priority_credit": candidate.PriorityCredit,
+		}).Error; err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		return ActivityUseResult{}, err
+	}
+	queueContext, cancelQueue := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+	defer cancelQueue()
+	if err := p.activity.AddPriority(queueContext, activityType, candidateUID, -1); err != nil {
+		slog.WarnContext(ctx, "consume priority activity credit failed", "type", activityType, "error", err)
+		_ = p.activity.InvalidateSeed(queueContext, activityType)
+	}
+	notifyContext, cancelNotify := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+	defer cancelNotify()
+	if err := p.updates.Publish(notifyContext, candidateUID, activityType); err != nil {
+		slog.WarnContext(ctx, "activity update notification failed", "type", activityType, "error", err)
+	}
+	return ActivityUseResult{
+		Content: candidate.Content,
+		Source:  "priority",
+		State:   activityResult(claimant),
+	}, nil
 }
 
 func (p *Platform) Points(ctx context.Context, uid string) (int64, error) {
@@ -864,7 +968,6 @@ func (p *Platform) canClaimActivity(ctx context.Context, uid, activityType strin
 	var count int64
 	err := p.db.WithContext(ctx).Model(&domain.ActivityContent{}).
 		Where("type = ? AND uid <> ?", activityType, uid).
-		Where("priority_credit > 0 OR (ordinary_credit > 0 AND ordinary_rounds < used_count)").
 		Count(&count).Error
 	if err != nil {
 		return false, fmt.Errorf("check activity availability: %w", err)

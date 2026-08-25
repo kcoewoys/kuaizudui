@@ -46,6 +46,7 @@ func Migrate(db *gorm.DB) error {
 		&domain.User{},
 		&domain.LuckyCode{},
 		&domain.ActivityContent{},
+		&domain.ActivityClaim{},
 		&domain.Notice{},
 		&domain.Setting{},
 		&domain.ExchangeCode{},
