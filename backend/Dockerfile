@@ -7,6 +7,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/server 
 
 FROM alpine:3.21
 RUN addgroup -S app && adduser -S app -G app
+RUN apk add --no-cache tzdata
 WORKDIR /app
 COPY --from=build /out/server /app/server
 COPY config /app/config

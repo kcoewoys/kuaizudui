@@ -125,10 +125,19 @@ func (p *Platform) ResetActivityQueues(ctx context.Context) error {
 // Durable data — users, points, point records, recharge records, exchange
 // codes, notices, settings, feedback — is left untouched. Redis goes first so
 // an interrupted reset leaves the activity queues re-seeding from MySQL
-// instead of serving already-deleted entries.
+// instead of serving already-deleted entries. Admin login sessions survive
+// the flush: the operator triggering a manual reset must not be logged out
+// the moment it completes.
 func (p *Platform) ResetDailyData(ctx context.Context) error {
+	sessions, err := p.snapshotAdminSessions(ctx)
+	if err != nil {
+		return err
+	}
 	if err := p.redis.FlushDB(ctx).Err(); err != nil {
 		return fmt.Errorf("flush redis for daily reset: %w", err)
+	}
+	if err := p.restoreAdminSessions(ctx, sessions); err != nil {
+		return err
 	}
 	if err := p.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		for _, target := range []any{&domain.ActivityClaim{}, &domain.ActivityContent{}, &domain.LuckyCode{}} {
@@ -139,6 +148,56 @@ func (p *Platform) ResetDailyData(ctx context.Context) error {
 		return nil
 	}); err != nil {
 		return fmt.Errorf("empty daily tables: %w", err)
+	}
+	return nil
+}
+
+type adminSessionSnapshot struct {
+	key   string
+	value string
+	ttl   time.Duration
+}
+
+func (p *Platform) snapshotAdminSessions(ctx context.Context) ([]adminSessionSnapshot, error) {
+	var snapshots []adminSessionSnapshot
+	var cursor uint64
+	for {
+		keys, next, err := p.redis.Scan(ctx, cursor, adminSessionPrefix+"*", 100).Result()
+		if err != nil {
+			return nil, fmt.Errorf("scan admin sessions for daily reset: %w", err)
+		}
+		for _, key := range keys {
+			value, err := p.redis.Get(ctx, key).Result()
+			if errors.Is(err, redis.Nil) {
+				continue
+			}
+			if err != nil {
+				return nil, fmt.Errorf("load admin session for daily reset: %w", err)
+			}
+			ttl, err := p.redis.TTL(ctx, key).Result()
+			if err != nil {
+				return nil, fmt.Errorf("load admin session ttl for daily reset: %w", err)
+			}
+			snapshots = append(snapshots, adminSessionSnapshot{key: key, value: value, ttl: ttl})
+		}
+		if next == 0 {
+			return snapshots, nil
+		}
+		cursor = next
+	}
+}
+
+func (p *Platform) restoreAdminSessions(ctx context.Context, snapshots []adminSessionSnapshot) error {
+	for _, session := range snapshots {
+		// Sessions always carry a positive TTL; anything else restores without
+		// an expiry rather than being dropped.
+		ttl := session.ttl
+		if ttl < 0 {
+			ttl = 0
+		}
+		if err := p.redis.Set(ctx, session.key, session.value, ttl).Err(); err != nil {
+			return fmt.Errorf("restore admin session after daily reset: %w", err)
+		}
 	}
 	return nil
 }

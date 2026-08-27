@@ -758,6 +758,8 @@ func TestResetDailyDataClearsRedisAndDailyTablesOnly(t *testing.T) {
 	require.NoError(t, db.Create(&domain.Notice{Type: "banner", Content: "keep"}).Error)
 	require.NoError(t, db.Create(&domain.Setting{Key: "custom", Value: "keep"}).Error)
 	require.NoError(t, redisClient.Set(ctx, firstVisitPrefix+"user-a", "1", 0).Err())
+	login, err := app.AdminLogin(ctx, "13800000000")
+	require.NoError(t, err)
 
 	require.NoError(t, app.ResetDailyData(ctx))
 
@@ -779,11 +781,18 @@ func TestResetDailyDataClearsRedisAndDailyTablesOnly(t *testing.T) {
 	require.NoError(t, db.Where("`key` = ?", "custom").First(&setting).Error)
 	require.Equal(t, "keep", setting.Value)
 
-	// Redis is emptied entirely, including non-queue markers such as first
-	// visits; the reset is a full FLUSHDB by design.
+	// Redis is emptied apart from admin login sessions, including non-queue
+	// markers such as first visits; the reset is a full FLUSHDB by design, but
+	// the operator stays signed in across it.
 	keys, err := redisClient.Keys(ctx, "*").Result()
 	require.NoError(t, err)
-	require.Empty(t, keys)
+	require.Equal(t, []string{"admin_session:" + login.Token}, keys)
+	ttl, err := redisClient.TTL(ctx, "admin_session:"+login.Token).Result()
+	require.NoError(t, err)
+	require.Positive(t, ttl)
+	phone, err := app.AuthenticateAdmin(ctx, login.Token)
+	require.NoError(t, err)
+	require.Equal(t, "13800000000", phone)
 }
 
 func TestDailyResetRunsOncePerDay(t *testing.T) {

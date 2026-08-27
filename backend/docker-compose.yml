@@ -32,6 +32,7 @@ services:
   api:
     build: .
     environment:
+      TZ: Asia/Shanghai
       APP_SERVER_MODE: release
       APP_MYSQL_DSN: app:app-password@tcp(mysql:3306)/kuaizudui?charset=utf8mb4&parseTime=True&loc=Local
       APP_REDIS_ADDRESS: redis:6379
