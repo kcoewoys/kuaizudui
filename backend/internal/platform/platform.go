@@ -80,6 +80,7 @@ type ActivityResult struct {
 	Content         string     `json:"content"`
 	Published       bool       `json:"published"`
 	OrdinaryRounds  int64      `json:"ordinary_rounds"`
+	OrdinaryCredit  int64      `json:"ordinary_credit"`
 	PriorityRounds  int64      `json:"priority_rounds"`
 	PointsCommitted int64      `json:"points_committed"`
 	PriorityCredit  int64      `json:"priority_credit"`
@@ -560,7 +561,7 @@ func (p *Platform) PublishActivity(ctx context.Context, uid, activityType, conte
 	if _, err := p.EnsureUser(ctx, uid); err != nil {
 		return ActivityResult{}, err
 	}
-	item := domain.ActivityContent{UID: uid, Type: activityType, Content: content}
+	item := domain.ActivityContent{UID: uid, Type: activityType, Content: content, OrdinaryCredit: int64(p.business.ActivityPublishOrdinaryCredit)}
 	result := p.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&item)
 	if result.Error != nil {
 		return ActivityResult{}, fmt.Errorf("publish activity content: %w", result.Error)
@@ -576,8 +577,9 @@ func (p *Platform) PublishActivity(ctx context.Context, uid, activityType, conte
 	if err := p.db.WithContext(ctx).Where("uid = ? AND type = ?", uid, activityType).First(&item).Error; err != nil {
 		return ActivityResult{}, fmt.Errorf("load activity content: %w", err)
 	}
-	// Publishing keeps the member parked in the ordinary queue even with a zero
-	// count; the count only rises again through claim clicks.
+	// A first publish enters the ordinary queue active with its granted
+	// chances; re-publishing only refreshes the content and keeps every count,
+	// so exhausted publishers are not refilled by editing.
 	if err := p.activity.EnqueueOrdinary(ctx, activityType, uid, item.OrdinaryCredit); err != nil {
 		_ = p.activity.InvalidateSeed(ctx, activityType)
 		return ActivityResult{}, err
@@ -791,12 +793,12 @@ func (p *Platform) claimPriorityActivity(ctx context.Context, claimant domain.Ac
 
 // claimCursorActivity serves ordinary claims through the activity's FIFO
 // cursor: one shared position that walks the queue in publish order and skips
-// the claimant themselves plus every publisher this claimant has already
-// received, wrapping back to the oldest unserved entry once the end is
-// reached. When no publisher is left to serve the claimant it reports
-// ErrQueueEmpty, so a click that has exhausted everyone fails cleanly instead
-// of handing out a duplicate. Entries are never consumed or parked by
-// ordinary claims, so each publisher keeps serving the other claimants.
+// the claimant themselves, every publisher this claimant has already received,
+// and publishers whose granted chances are used up (parked). When no publisher
+// is left to serve the claimant it reports ErrQueueEmpty, so a click that has
+// exhausted everyone fails cleanly instead of handing out a duplicate.
+// Publishers park when their chances run out and re-activate through the
+// chance they earn with each of their own claim clicks.
 func (p *Platform) claimCursorActivity(ctx context.Context, claimant domain.ActivityContent, activityType string, claimed []string) (ActivityUseResult, error) {
 	for attempt := 0; attempt < maxActivityQueueAttempts; attempt++ {
 		candidateUID, err := p.activity.NextByCursor(ctx, activityType, claimant.UID, claimed)
@@ -821,8 +823,8 @@ func (p *Platform) claimCursorActivity(ctx context.Context, claimant domain.Acti
 // deliverCursorActivity hands the cursor-selected publisher's content to the
 // claimant. The claim record keeps one row per claimant-publisher pair — it
 // drives the exclusion list that keeps served publishers from being picked
-// again — and no credit is consumed, so ordinary claims never drain a
-// publisher's queue entry.
+// again — and serving costs the publisher one of their ordinary chances, so a
+// first publish is served at most three times until more chances are earned.
 func (p *Platform) deliverCursorActivity(
 	ctx context.Context,
 	claimant domain.ActivityContent,
@@ -837,8 +839,15 @@ func (p *Platform) deliverCursorActivity(
 			}
 			return err
 		}
+		if candidate.OrdinaryCredit <= 0 {
+			return errStaleActivityQueueEntry
+		}
 		candidate.OrdinaryRounds++
-		if err := tx.Model(&candidate).Update("ordinary_rounds", candidate.OrdinaryRounds).Error; err != nil {
+		candidate.OrdinaryCredit--
+		if err := tx.Model(&candidate).UpdateColumns(map[string]any{
+			"ordinary_rounds": candidate.OrdinaryRounds,
+			"ordinary_credit": candidate.OrdinaryCredit,
+		}).Error; err != nil {
 			return err
 		}
 		claimRecord := domain.ActivityClaim{ClaimantUID: claimant.UID, PublisherUID: candidate.UID, Type: activityType}
@@ -852,6 +861,10 @@ func (p *Platform) deliverCursorActivity(
 	}
 	queueContext, cancelQueue := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
 	defer cancelQueue()
+	if err := p.activity.AddOrdinary(queueContext, activityType, candidateUID, -1); err != nil {
+		slog.WarnContext(ctx, "consume ordinary activity credit failed", "type", activityType, "error", err)
+		_ = p.activity.InvalidateSeed(queueContext, activityType)
+	}
 	if err := p.activity.AddOrdinary(queueContext, activityType, claimant.UID, 1); err != nil {
 		slog.WarnContext(ctx, "add earned activity credit failed", "type", activityType, "error", err)
 		_ = p.activity.InvalidateSeed(queueContext, activityType)
@@ -1060,7 +1073,8 @@ func maskIdentifier(value string) string {
 func activityResult(item domain.ActivityContent) ActivityResult {
 	return ActivityResult{
 		Type: item.Type, Content: item.Content, Published: true,
-		OrdinaryRounds: item.OrdinaryRounds, PriorityRounds: item.PriorityRounds,
+		OrdinaryRounds: item.OrdinaryRounds, OrdinaryCredit: item.OrdinaryCredit,
+		PriorityRounds:  item.PriorityRounds,
 		PointsCommitted: item.PointsCommitted, PriorityCredit: item.PriorityCredit,
 		ClaimCount:  item.ClaimCount,
 		PublishedAt: &item.CreatedAt, UpdatedAt: &item.UpdatedAt,

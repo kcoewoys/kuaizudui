@@ -78,15 +78,18 @@ type RedisConfig struct {
 }
 
 type BusinessConfig struct {
-	AdminPhone               string   `yaml:"admin_phone"`
-	QRCodeUploadDir          string   `yaml:"qrcode_upload_dir"`
-	QRCodeMaxUploadBytes     int64    `yaml:"qrcode_max_upload_bytes"`
-	LuckyCodeMinLength       int      `yaml:"lucky_code_min_length"`
-	LuckyCodeMaxLength       int      `yaml:"lucky_code_max_length"`
-	ActivityContentMaxLength int      `yaml:"activity_content_max_length"`
-	FirstVisitTTL            Duration `yaml:"first_visit_ttl"`
-	LuckyClaimTTL            Duration `yaml:"lucky_claim_ttl"`
-	DailyResetClock          Clock    `yaml:"daily_reset_time"`
+	AdminPhone               string `yaml:"admin_phone"`
+	QRCodeUploadDir          string `yaml:"qrcode_upload_dir"`
+	QRCodeMaxUploadBytes     int64  `yaml:"qrcode_max_upload_bytes"`
+	LuckyCodeMinLength       int    `yaml:"lucky_code_min_length"`
+	LuckyCodeMaxLength       int    `yaml:"lucky_code_max_length"`
+	ActivityContentMaxLength int    `yaml:"activity_content_max_length"`
+	// ActivityPublishOrdinaryCredit is the number of ordinary-queue chances a
+	// first publish grants; zero disables the grant entirely.
+	ActivityPublishOrdinaryCredit int      `yaml:"activity_publish_ordinary_credit"`
+	FirstVisitTTL                 Duration `yaml:"first_visit_ttl"`
+	LuckyClaimTTL                 Duration `yaml:"lucky_claim_ttl"`
+	DailyResetClock               Clock    `yaml:"daily_reset_time"`
 }
 
 type SecurityConfig struct {
@@ -113,7 +116,8 @@ func defaults() Config {
 		Business: BusinessConfig{
 			QRCodeUploadDir: "uploads", QRCodeMaxUploadBytes: 5 * 1024 * 1024,
 			LuckyCodeMinLength: 8, LuckyCodeMaxLength: 9, ActivityContentMaxLength: 200,
-			FirstVisitTTL: Duration(365 * 24 * time.Hour), LuckyClaimTTL: Duration(24 * time.Hour),
+			ActivityPublishOrdinaryCredit: 3,
+			FirstVisitTTL:                 Duration(365 * 24 * time.Hour), LuckyClaimTTL: Duration(24 * time.Hour),
 			DailyResetClock: Clock{Hour: 0, Minute: 0},
 		},
 		Security: SecurityConfig{AdminSessionTTL: Duration(12 * time.Hour)},
@@ -166,6 +170,9 @@ func (c Config) Validate() error {
 	}
 	if c.Business.ActivityContentMaxLength < 1 {
 		problems = append(problems, "business.activity_content_max_length must be positive")
+	}
+	if c.Business.ActivityPublishOrdinaryCredit < 0 {
+		problems = append(problems, "business.activity_publish_ordinary_credit must not be negative")
 	}
 	if c.Business.FirstVisitTTL.Value() <= 0 || c.Business.LuckyClaimTTL.Value() <= 0 {
 		problems = append(problems, "business ttl values must be positive")

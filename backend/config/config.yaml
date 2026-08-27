@@ -30,6 +30,8 @@ business:
   lucky_code_min_length: 8
   lucky_code_max_length: 9
   activity_content_max_length: 200
+  # 首次发布赠送的普通队列次数：内容可被别人领取的初始机会数，0 表示发布不赠送
+  activity_publish_ordinary_credit: 3
   first_visit_ttl: 8760h
   lucky_claim_ttl: 24h
   # 每日重置时间（服务器本地时区）：清空整个 Redis 并清空当日业务表

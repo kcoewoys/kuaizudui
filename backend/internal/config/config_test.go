@@ -34,6 +34,7 @@ security:
 	require.Equal(t, 9090, cfg.Server.Port)
 	require.Equal(t, "redis.internal:6379", cfg.Redis.Address)
 	require.Equal(t, 200, cfg.Business.ActivityContentMaxLength)
+	require.Equal(t, 3, cfg.Business.ActivityPublishOrdinaryCredit)
 	require.Equal(t, "custom-uploads", cfg.Business.QRCodeUploadDir)
 	require.EqualValues(t, 1048576, cfg.Business.QRCodeMaxUploadBytes)
 }

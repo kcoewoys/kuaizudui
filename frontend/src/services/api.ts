@@ -33,6 +33,7 @@ export interface ActivityStateResponse {
   content: string
   published: boolean
   ordinary_rounds: number
+  ordinary_credit: number
   priority_rounds: number
   points_committed: number
   priority_credit: number

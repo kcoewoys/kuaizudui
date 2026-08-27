@@ -10,6 +10,7 @@ export function useInviteActivity(config: InviteActivityConfig) {
     publishedAt: null as string | null,
     updatedAt: null as string | null,
     ordinaryRounds: 0,
+    ordinaryCredit: 0,
     priorityRounds: 0,
     pointsCommitted: 0,
     priorityCredit: 0,
@@ -33,6 +34,8 @@ export function useInviteActivity(config: InviteActivityConfig) {
   let stateRevision = 0
 
   const remaining = computed(() => 200 - draft.value.length)
+  // 普通队列机会总量 = 已被领取次数 + 剩余次数（发布赠送 3 次 + 领码攒出的机会）。
+  const ordinaryQuota = computed(() => state.ordinaryRounds + state.ordinaryCredit)
   const isPublished = computed(() => Boolean(state.content))
   const userPoints = computed(() => Math.max(0, userState.points))
   const maxBoostPoints = computed(() => userPoints.value)
@@ -69,6 +72,7 @@ export function useInviteActivity(config: InviteActivityConfig) {
     state.publishedAt = value.published_at || null
     state.updatedAt = value.updated_at || null
     state.ordinaryRounds = value.ordinary_rounds
+    state.ordinaryCredit = value.ordinary_credit
     state.priorityRounds = value.priority_rounds
     state.pointsCommitted = value.points_committed
     state.priorityCredit = value.priority_credit
@@ -260,6 +264,7 @@ export function useInviteActivity(config: InviteActivityConfig) {
     error,
     toast,
     remaining,
+    ordinaryQuota,
     isPublished,
     boostPointsInput,
     userPoints,

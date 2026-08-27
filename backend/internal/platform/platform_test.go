@@ -32,9 +32,10 @@ func testPlatform(t *testing.T) (*Platform, *gorm.DB, *redis.Client, config.Conf
 	cfg := config.Config{
 		Business: config.BusinessConfig{
 			AdminPhone: "13800000000", LuckyCodeMinLength: 8, LuckyCodeMaxLength: 9,
-			ActivityContentMaxLength: 200,
-			FirstVisitTTL:            config.Duration(time.Hour),
-			LuckyClaimTTL:            config.Duration(time.Hour),
+			ActivityContentMaxLength:      200,
+			ActivityPublishOrdinaryCredit: 3,
+			FirstVisitTTL:                 config.Duration(time.Hour),
+			LuckyClaimTTL:                 config.Duration(time.Hour),
 		},
 		Security: config.SecurityConfig{
 			AdminSessionTTL: config.Duration(time.Hour), AdminTokenSecret: "test-secret",
@@ -57,8 +58,10 @@ func TestActivityTypesUseTheSameRulesAndIndependentRecords(t *testing.T) {
 		published, err := app.PublishActivity(ctx, "user-a", activityType, content)
 		require.NoError(t, err)
 		require.True(t, published.Published)
-		// Publishing itself earns no claim credit — only claim clicks count.
+		// Publishing grants ordinary chances but earns no claim credit — only
+		// claim clicks count.
 		require.Zero(t, published.ClaimCount)
+		require.Equal(t, int64(app.business.ActivityPublishOrdinaryCredit), published.OrdinaryCredit)
 
 		detail, err := app.ActivityDetail(ctx, "user-a", activityType)
 		require.NoError(t, err)
@@ -126,11 +129,11 @@ func TestActivityClaimIncrementsClaimantCountAndContentOwnerRound(t *testing.T) 
 	require.Zero(t, owner.ClaimCount)
 	var claimantRecord domain.ActivityContent
 	require.NoError(t, db.Where("uid = ? AND type = ?", "claimant", activityType).First(&claimantRecord).Error)
-	require.Equal(t, int64(1), claimantRecord.OrdinaryCredit)
+	require.Equal(t, int64(app.business.ActivityPublishOrdinaryCredit)+1, claimantRecord.OrdinaryCredit)
 	var ownerRecord domain.ActivityContent
 	require.NoError(t, db.Where("uid = ? AND type = ?", "content-owner", activityType).First(&ownerRecord).Error)
-	// The cursor never drains a publisher: serving leaves the owner's credit untouched.
-	require.Zero(t, ownerRecord.OrdinaryCredit)
+	// Serving consumed one of the owner's three publishing chances.
+	require.Equal(t, int64(app.business.ActivityPublishOrdinaryCredit)-1, ownerRecord.OrdinaryCredit)
 }
 
 func TestActivityClaimStopsOnceEveryFreshPublisherIsServed(t *testing.T) {
@@ -153,6 +156,7 @@ func TestActivityClaimStopsOnceEveryFreshPublisherIsServed(t *testing.T) {
 	owner, err := app.ActivityDetail(ctx, "content-owner", activityType)
 	require.NoError(t, err)
 	require.Equal(t, int64(1), owner.OrdinaryRounds)
+	require.Equal(t, int64(app.business.ActivityPublishOrdinaryCredit)-1, owner.OrdinaryCredit)
 	claimant, err := app.ActivityDetail(ctx, "claimant", activityType)
 	require.NoError(t, err)
 	require.Equal(t, int64(1), claimant.ClaimCount)
@@ -482,6 +486,7 @@ func TestActivityClaimUsesPriorityBeforeOrdinaryAndSkipsSelf(t *testing.T) {
 	userB, err := app.ActivityDetail(ctx, "user-b", activityType)
 	require.NoError(t, err)
 	require.Equal(t, int64(1), userB.OrdinaryRounds)
+	require.Equal(t, int64(app.business.ActivityPublishOrdinaryCredit)-1, userB.OrdinaryCredit)
 
 	require.NoError(t, db.Model(&domain.User{}).Where("uid = ?", "user-c").Update("points", 10).Error)
 	boosted, err := app.BoostActivity(ctx, "user-c", activityType, 2)
@@ -609,45 +614,45 @@ func TestActivityClaimCursorServesFIFOAndStopsWhenExhausted(t *testing.T) {
 	ctx := context.Background()
 	activityType := domain.ActivityBuyFood
 
-	_, err := app.PublishActivity(ctx, "zero-owner", activityType, "zero invitation")
+	_, err := app.PublishActivity(ctx, "first-owner", activityType, "first invitation")
 	require.NoError(t, err)
-	_, err = app.PublishActivity(ctx, "funded-owner", activityType, "funded invitation")
+	_, err = app.PublishActivity(ctx, "second-owner", activityType, "second invitation")
 	require.NoError(t, err)
 	_, err = app.PublishActivity(ctx, "claimant", activityType, "claimant invitation")
 	require.NoError(t, err)
 
-	// The cursor walks publishers in publish order; counts never gate it and
-	// nothing gets parked after being served.
+	// The cursor walks publishers in publish order while they still hold
+	// chances from publishing.
 	first, err := app.UseActivity(ctx, "claimant", activityType)
 	require.NoError(t, err)
-	require.Equal(t, "zero invitation", first.Content)
+	require.Equal(t, "first invitation", first.Content)
 	second, err := app.UseActivity(ctx, "claimant", activityType)
 	require.NoError(t, err)
-	require.Equal(t, "funded invitation", second.Content)
+	require.Equal(t, "second invitation", second.Content)
 
 	// Every fresh publisher has been served, so the next click stops instead
 	// of repeating content.
 	_, err = app.UseActivity(ctx, "claimant", activityType)
 	require.ErrorIs(t, err, domain.ErrQueueEmpty)
 
-	var zero domain.ActivityContent
-	require.NoError(t, db.Where("uid = ? AND type = ?", "zero-owner", activityType).First(&zero).Error)
-	require.Equal(t, int64(1), zero.OrdinaryRounds)
-	require.Zero(t, zero.OrdinaryCredit)
-	var funded domain.ActivityContent
-	require.NoError(t, db.Where("uid = ? AND type = ?", "funded-owner", activityType).First(&funded).Error)
-	require.Equal(t, int64(1), funded.OrdinaryRounds)
-	require.Zero(t, funded.OrdinaryCredit)
+	var firstRecord domain.ActivityContent
+	require.NoError(t, db.Where("uid = ? AND type = ?", "first-owner", activityType).First(&firstRecord).Error)
+	require.Equal(t, int64(1), firstRecord.OrdinaryRounds)
+	require.Equal(t, int64(app.business.ActivityPublishOrdinaryCredit)-1, firstRecord.OrdinaryCredit)
+	var secondRecord domain.ActivityContent
+	require.NoError(t, db.Where("uid = ? AND type = ?", "second-owner", activityType).First(&secondRecord).Error)
+	require.Equal(t, int64(1), secondRecord.OrdinaryRounds)
+	require.Equal(t, int64(app.business.ActivityPublishOrdinaryCredit)-1, secondRecord.OrdinaryCredit)
 
-	// The claimant's own clicks earned credit but never served themselves; the
-	// failed claim did not count either.
+	// The claimant still holds the publishing grant on top of the chances the
+	// own clicks earned; the failed claim did not count either.
 	var claimantRecord domain.ActivityContent
 	require.NoError(t, db.Where("uid = ? AND type = ?", "claimant", activityType).First(&claimantRecord).Error)
 	require.Zero(t, claimantRecord.OrdinaryRounds)
-	require.Equal(t, int64(2), claimantRecord.OrdinaryCredit)
+	require.Equal(t, int64(app.business.ActivityPublishOrdinaryCredit)+2, claimantRecord.OrdinaryCredit)
 
 	// A publisher's turn also comes from other claimants' clicks.
-	claimedBack, err := app.UseActivity(ctx, "funded-owner", activityType)
+	claimedBack, err := app.UseActivity(ctx, "second-owner", activityType)
 	require.NoError(t, err)
 	require.Equal(t, "claimant invitation", claimedBack.Content)
 	require.Equal(t, int64(1), claimedBack.State.ClaimCount)

@@ -144,13 +144,22 @@ func TestActivityQueueCursorWalksFIFOAndLoops(t *testing.T) {
 	activityQueue := NewActivityQueue(client)
 	ctx := context.Background()
 
-	// Mixed counts must not affect the cursor's publish order, and a zero
-	// count parks nobody — every member keeps receiving turns.
+	// Mixed counts must not affect the cursor's publish order, but a zero
+	// count parks the member: only publishers holding chances take turns.
 	require.NoError(t, activityQueue.EnqueueOrdinary(ctx, domain.ActivityBuyFood, "user-a", 1))
 	require.NoError(t, activityQueue.EnqueueOrdinary(ctx, domain.ActivityBuyFood, "user-b", 0))
 	require.NoError(t, activityQueue.EnqueueOrdinary(ctx, domain.ActivityBuyFood, "user-c", 2))
 
-	for _, expected := range []string{"user-a", "user-b", "user-c", "user-a", "user-b", "user-c"} {
+	for _, expected := range []string{"user-a", "user-c", "user-a", "user-c"} {
+		uid, err := activityQueue.NextByCursor(ctx, domain.ActivityBuyFood, "other", nil)
+		require.NoError(t, err)
+		require.Equal(t, expected, uid)
+	}
+
+	// Earning a chance back re-activates the parked member at its original
+	// publish position; the wrap-around resumes from the oldest active member.
+	require.NoError(t, activityQueue.AddOrdinary(ctx, domain.ActivityBuyFood, "user-b", 1))
+	for _, expected := range []string{"user-a", "user-b", "user-c"} {
 		uid, err := activityQueue.NextByCursor(ctx, domain.ActivityBuyFood, "other", nil)
 		require.NoError(t, err)
 		require.Equal(t, expected, uid)
@@ -185,6 +194,16 @@ func TestActivityQueueCursorSkipsSelfAndAlreadyServed(t *testing.T) {
 	// member is never handed out a second time.
 	_, err = activityQueue.NextByCursor(ctx, domain.ActivityBuyFood, "user-a", []string{"user-b", "user-c"})
 	require.ErrorIs(t, err, domain.ErrQueueEmpty)
+
+	// Members whose ordinary chances are used up are parked (negative score)
+	// and skipped until a claim click earns them a fresh chance.
+	require.NoError(t, activityQueue.EnqueueOrdinary(ctx, domain.ActivityBuyFood, "user-d", 0))
+	_, err = activityQueue.NextByCursor(ctx, domain.ActivityBuyFood, "user-a", []string{"user-b", "user-c"})
+	require.ErrorIs(t, err, domain.ErrQueueEmpty)
+	require.NoError(t, activityQueue.AddOrdinary(ctx, domain.ActivityBuyFood, "user-d", 1))
+	uid, err = activityQueue.NextByCursor(ctx, domain.ActivityBuyFood, "user-a", []string{"user-b", "user-c"})
+	require.NoError(t, err)
+	require.Equal(t, "user-d", uid)
 
 	// A queue holding only the claimant serves nobody.
 	require.NoError(t, activityQueue.EnqueueOrdinary(ctx, domain.ActivityDailyCash, "solo", 1))
@@ -227,7 +246,10 @@ func TestActivityQueueStatusReportsCursorRankAndTotals(t *testing.T) {
 
 	// The reported rank follows the member the cursor last landed on and
 	// wraps back to zero once the whole queue has been served. The raw
-	// sequence is timestamp-seeded, so only its growth is asserted.
+	// sequence is timestamp-seeded, so only its growth is asserted. The
+	// parked member earns a chance first because the cursor only walks
+	// active publishers.
+	require.NoError(t, activityQueue.AddOrdinary(ctx, domain.ActivityBuyFood, "user-b", 1))
 	_, err = activityQueue.NextByCursor(ctx, domain.ActivityBuyFood, "other", nil)
 	require.NoError(t, err)
 	status, err = activityQueue.OrdinaryStatus(ctx, domain.ActivityBuyFood)

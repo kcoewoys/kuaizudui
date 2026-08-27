@@ -46,8 +46,9 @@ func testRouterComponents(t *testing.T) (http.Handler, *gorm.DB, *redis.Client) 
 		Server: config.ServerConfig{Mode: "test", AllowedOrigins: []string{"http://localhost:5173"}},
 		Business: config.BusinessConfig{
 			AdminPhone: "13800000000", LuckyCodeMinLength: 8, LuckyCodeMaxLength: 9,
-			ActivityContentMaxLength: 200,
-			QRCodeUploadDir:          filepath.Join(t.TempDir(), "uploads"), QRCodeMaxUploadBytes: 5 * 1024 * 1024,
+			ActivityContentMaxLength:      200,
+			ActivityPublishOrdinaryCredit: 3,
+			QRCodeUploadDir:               filepath.Join(t.TempDir(), "uploads"), QRCodeMaxUploadBytes: 5 * 1024 * 1024,
 			FirstVisitTTL: config.Duration(time.Hour),
 			LuckyClaimTTL: config.Duration(time.Hour),
 		},
