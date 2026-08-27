@@ -1,17 +1,18 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { ArrowLeft, Coins, LogOut, MessageSquareText, Settings2, ShieldCheck, TicketCheck } from 'lucide-vue-next'
+import { Activity, ArrowLeft, Coins, LogOut, MessageSquareText, Settings2, ShieldCheck, TicketCheck } from 'lucide-vue-next'
 import { useRouter } from 'vue-router'
 import AdminConfigPanel from '@/components/admin/AdminConfigPanel.vue'
 import AdminExchangePanel from '@/components/admin/AdminExchangePanel.vue'
 import AdminFeedbackPanel from '@/components/admin/AdminFeedbackPanel.vue'
 import AdminPhoneGate from '@/components/admin/AdminPhoneGate.vue'
 import AdminRechargePanel from '@/components/admin/AdminRechargePanel.vue'
+import AdminStatusPanel from '@/components/admin/AdminStatusPanel.vue'
 import ToastMessage from '@/components/ToastMessage.vue'
 import { adminApi, friendlyAdminError } from '@/services/adminApi'
 import '@/admin.css'
 
-type AdminSection = 'recharge' | 'exchanges' | 'config' | 'feedback'
+type AdminSection = 'recharge' | 'exchanges' | 'config' | 'feedback' | 'status'
 
 const router = useRouter()
 const verified = ref(false)
@@ -26,6 +27,7 @@ const navigation = [
   { id: 'exchanges' as const, label: '兑换码', description: '生成与使用状态', icon: TicketCheck },
   { id: 'config' as const, label: '内容配置', description: '公告与交流群', icon: Settings2 },
   { id: 'feedback' as const, label: '反馈', description: '用户意见与提交时间', icon: MessageSquareText },
+  { id: 'status' as const, label: '状态', description: '排队队列游标监视', icon: Activity },
 ]
 
 const activeItem = computed(() => navigation.find((item) => item.id === activeSection.value) ?? navigation[0])
@@ -89,15 +91,16 @@ onMounted(() => adminApi.clearSession())
         </header>
 
         <section class="admin-workspace">
-          <header class="admin-topbar">
+          <header v-if="activeSection !== 'status'" class="admin-topbar">
             <div>
               <h1>{{ activeItem.label }}</h1>
               <p>{{ activeItem.description }}</p>
             </div>
           </header>
 
-          <div class="admin-workspace-content">
-            <AdminRechargePanel v-if="activeSection === 'recharge'" @session-expired="sessionExpired" @message="showToast" />
+          <div class="admin-workspace-content" :class="{ 'admin-workspace-content--flush': activeSection === 'status' }">
+            <AdminStatusPanel v-if="activeSection === 'status'" @session-expired="sessionExpired" />
+            <AdminRechargePanel v-else-if="activeSection === 'recharge'" @session-expired="sessionExpired" @message="showToast" />
             <AdminExchangePanel v-else-if="activeSection === 'exchanges'" @session-expired="sessionExpired" @message="showToast" />
             <AdminConfigPanel v-else-if="activeSection === 'config'" @session-expired="sessionExpired" @message="showToast" />
             <AdminFeedbackPanel v-else @session-expired="sessionExpired" />

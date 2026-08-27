@@ -101,6 +101,15 @@ func (s *Server) adminCreateExchangeCodes(c *gin.Context) {
 	created(c, gin.H{"items": result, "count": len(result)})
 }
 
+func (s *Server) adminActivityQueues(c *gin.Context) {
+	items, err := s.platform.AdminActivityQueues(c.Request.Context())
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	success(c, gin.H{"items": items})
+}
+
 func (s *Server) adminListExchangeCodes(c *gin.Context) {
 	limit, offset := parsePagination(c)
 	result, err := s.platform.AdminListExchangeCodes(c.Request.Context(), c.Query("status"), limit, offset)

@@ -93,6 +93,7 @@ func NewRouter(app *platform.Platform, db *gorm.DB, redisClient redis.UniversalC
 			admin.POST("/qrcode", server.adminSetGroupQRCode)
 			admin.DELETE("/qrcode", server.adminRemoveGroupQRCode)
 			admin.GET("/feedback", server.adminListFeedback)
+			admin.GET("/activity-queues", server.adminActivityQueues)
 		}
 	}
 	return router

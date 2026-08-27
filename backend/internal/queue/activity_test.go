@@ -198,3 +198,73 @@ func TestActivityQueueCursorSkipsSelfAndAlreadyServed(t *testing.T) {
 	_, err = activityQueue.NextByCursor(ctx, domain.ActivityDailyCash, "solo", nil)
 	require.ErrorIs(t, err, domain.ErrQueueEmpty)
 }
+
+func TestActivityQueueStatusReportsCursorRankAndTotals(t *testing.T) {
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	activityQueue := NewActivityQueue(client)
+	ctx := context.Background()
+
+	// Without any member the sorted sets do not exist, which is what the
+	// admin panel treats as "queue not created yet".
+	status, err := activityQueue.OrdinaryStatus(ctx, domain.ActivityBuyFood)
+	require.NoError(t, err)
+	require.False(t, status.Created)
+	require.Zero(t, status.Total)
+	require.Zero(t, status.Position)
+	require.Zero(t, status.CursorSeq)
+	status, err = activityQueue.PriorityStatus(ctx, domain.ActivityBuyFood)
+	require.NoError(t, err)
+	require.False(t, status.Created)
+	require.Zero(t, status.Total)
+
+	require.NoError(t, activityQueue.EnqueueOrdinary(ctx, domain.ActivityBuyFood, "user-a", 1))
+	require.NoError(t, activityQueue.EnqueueOrdinary(ctx, domain.ActivityBuyFood, "user-b", 0))
+	require.NoError(t, activityQueue.EnqueueOrdinary(ctx, domain.ActivityBuyFood, "user-c", 2))
+
+	// A fresh queue has no cursor yet, so every cursor number reads zero —
+	// parked members still count toward the total.
+	status, err = activityQueue.OrdinaryStatus(ctx, domain.ActivityBuyFood)
+	require.NoError(t, err)
+	require.True(t, status.Created)
+	require.Equal(t, int64(3), status.Total)
+	require.Zero(t, status.Position)
+	require.Zero(t, status.CursorSeq)
+
+	// The reported rank follows the member the cursor last landed on and
+	// wraps back to zero once the whole queue has been served. The raw
+	// sequence is timestamp-seeded, so only its growth is asserted.
+	_, err = activityQueue.NextByCursor(ctx, domain.ActivityBuyFood, "other", nil)
+	require.NoError(t, err)
+	status, err = activityQueue.OrdinaryStatus(ctx, domain.ActivityBuyFood)
+	require.NoError(t, err)
+	require.Positive(t, status.CursorSeq)
+	require.Equal(t, int64(1), status.Position)
+	firstCursor := status.CursorSeq
+
+	_, err = activityQueue.NextByCursor(ctx, domain.ActivityBuyFood, "other", nil)
+	require.NoError(t, err)
+	_, err = activityQueue.NextByCursor(ctx, domain.ActivityBuyFood, "other", nil)
+	require.NoError(t, err)
+	status, err = activityQueue.OrdinaryStatus(ctx, domain.ActivityBuyFood)
+	require.NoError(t, err)
+	require.Greater(t, status.CursorSeq, firstCursor)
+	require.Zero(t, status.Position)
+
+	// The priority queue keeps no cursor of its own: only existence and the
+	// member count are meaningful there.
+	require.NoError(t, activityQueue.EnqueuePriority(ctx, domain.ActivityBuyFood, "user-d", 1))
+	status, err = activityQueue.PriorityStatus(ctx, domain.ActivityBuyFood)
+	require.NoError(t, err)
+	require.True(t, status.Created)
+	require.Equal(t, int64(1), status.Total)
+	require.Zero(t, status.Position)
+	require.Zero(t, status.CursorSeq)
+
+	require.NoError(t, activityQueue.RemovePriority(ctx, domain.ActivityBuyFood, "user-d"))
+	status, err = activityQueue.PriorityStatus(ctx, domain.ActivityBuyFood)
+	require.NoError(t, err)
+	require.False(t, status.Created)
+	require.Zero(t, status.Total)
+}

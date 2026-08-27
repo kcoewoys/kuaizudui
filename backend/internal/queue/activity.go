@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/eaok-cn/kuaizudui/backend/internal/domain"
@@ -86,6 +89,60 @@ func (q *ActivityQueue) RemoveOrdinary(ctx context.Context, activityType, uid st
 
 func (q *ActivityQueue) RemovePriority(ctx context.Context, activityType, uid string) error {
 	return q.remove(ctx, activityType, "priority", uid)
+}
+
+// QueueStatus snapshots one queue for the admin monitor. Created reports
+// whether the sorted set exists at all — Redis drops empty sets, so a missing
+// key means the queue was never built. Total counts every member including
+// parked zero-count entries. Position is the ordinary queue's shared FIFO
+// cursor expressed as a zero-based rank (the member the next rotation lands
+// on) and CursorSeq is the raw cursor sequence number; the priority queue
+// keeps no cursor and reports both as zero.
+type QueueStatus struct {
+	Created   bool  `json:"created"`
+	Total     int64 `json:"total"`
+	Position  int64 `json:"position"`
+	CursorSeq int64 `json:"cursor_seq"`
+}
+
+func (q *ActivityQueue) OrdinaryStatus(ctx context.Context, activityType string) (QueueStatus, error) {
+	pipe := q.client.Pipeline()
+	cursorCmd := pipe.Get(ctx, activityCursorKey(activityType))
+	membersCmd := pipe.ZRangeWithScores(ctx, activityZSetKey(activityType, "ordinary"), 0, -1)
+	if _, err := pipe.Exec(ctx); err != nil && !errors.Is(err, redis.Nil) {
+		return QueueStatus{}, fmt.Errorf("load ordinary activity queue status: %w", err)
+	}
+	members, err := membersCmd.Result()
+	if err != nil {
+		return QueueStatus{}, fmt.Errorf("load ordinary activity queue status: %w", err)
+	}
+	status := QueueStatus{Created: len(members) > 0, Total: int64(len(members))}
+	if cursorValue, err := cursorCmd.Result(); err == nil {
+		status.CursorSeq, _ = strconv.ParseInt(strings.TrimSpace(cursorValue), 10, 64)
+	}
+	// The cursor stores the sequence of the member it last landed on, so the
+	// next turn's rank is the count of members carrying a sequence at or below
+	// it — zero means the rotation has not started yet. Score signs encode the
+	// parked state, hence the absolute values; a full lap wraps back to zero.
+	if status.CursorSeq > 0 && status.Total > 0 {
+		for _, member := range members {
+			if math.Abs(member.Score) <= float64(status.CursorSeq) {
+				status.Position++
+			}
+		}
+		if status.Position >= status.Total {
+			status.Position = 0
+		}
+	}
+	return status, nil
+}
+
+func (q *ActivityQueue) PriorityStatus(ctx context.Context, activityType string) (QueueStatus, error) {
+	total, err := q.client.ZCard(ctx, activityZSetKey(activityType, "priority")).Result()
+	if err != nil {
+		return QueueStatus{}, fmt.Errorf("load priority activity queue status: %w", err)
+	}
+	return QueueStatus{Created: total > 0, Total: total}, nil
 }
 
 func (q *ActivityQueue) Seeded(ctx context.Context, activityType string) (bool, error) {

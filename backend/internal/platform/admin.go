@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/eaok-cn/kuaizudui/backend/internal/domain"
+	"github.com/eaok-cn/kuaizudui/backend/internal/queue"
 	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -29,6 +30,35 @@ type UserPage struct {
 	Total  int64         `json:"total"`
 	Limit  int           `json:"limit"`
 	Offset int           `json:"offset"`
+}
+
+// ActivityQueueSnapshot pairs one activity's ordinary and priority queue
+// status for the admin status panel.
+type ActivityQueueSnapshot struct {
+	Type     string            `json:"type"`
+	Ordinary queue.QueueStatus `json:"ordinary"`
+	Priority queue.QueueStatus `json:"priority"`
+}
+
+var adminActivityOrder = []string{
+	domain.ActivityBuyFood, domain.ActivityCashTurntable,
+	domain.ActivityCashMonopoly, domain.ActivityDailyCash,
+}
+
+func (p *Platform) AdminActivityQueues(ctx context.Context) ([]ActivityQueueSnapshot, error) {
+	items := make([]ActivityQueueSnapshot, 0, len(adminActivityOrder))
+	for _, activityType := range adminActivityOrder {
+		ordinary, err := p.activity.OrdinaryStatus(ctx, activityType)
+		if err != nil {
+			return nil, err
+		}
+		priority, err := p.activity.PriorityStatus(ctx, activityType)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, ActivityQueueSnapshot{Type: activityType, Ordinary: ordinary, Priority: priority})
+	}
+	return items, nil
 }
 
 func (p *Platform) AdminLogin(ctx context.Context, phone string) (AdminLoginResult, error) {

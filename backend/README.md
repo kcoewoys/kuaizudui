@@ -243,8 +243,11 @@ type = 当前活动 AND uid != 当前用户
 | `GET` | `/api/v1/admin/exchanges` | 查看兑换码及使用状态 |
 | `POST` | `/api/v1/admin/qrcode` | 上传交流群二维码，`multipart/form-data` 字段名为 `image` |
 | `DELETE` | `/api/v1/admin/qrcode` | 移除当前交流群二维码 |
+| `GET` | `/api/v1/admin/activity-queues` | 监视四种活动的普通/插队队列游标状态 |
 
 二维码仅接受真实 PNG/JPEG 图片，默认最大 5 MB、最大边长 6000 px。后端通过文件签名和图片头校验内容，不信任扩展名或浏览器传入的 MIME 类型。
+
+`GET /api/v1/admin/activity-queues` 返回四种活动的双队列快照，对应管理台「状态」栏目。每个队列包含四个字段：`created` 表示队列是否已创建（Redis 会自动删除空有序集合，键不存在即“队列未创建”）；`total` 为队列总个数（含额度归零的停泊成员）；`position` 为游标位置——普通队列是共享 FIFO 游标在队列中的 0 起算位次（游标尚未移动或走完一圈时为 0），插队队列按最早入队选取、没有游标，恒为 0；`cursor_seq` 是游标的原始入队序号（毫秒时间戳播种），同样仅普通队列非零。
 
 ## 验证
 

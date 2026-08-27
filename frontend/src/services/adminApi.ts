@@ -54,6 +54,19 @@ export interface AdminFeedbackRecord {
   created_at: string
 }
 
+export interface QueueStatus {
+  created: boolean
+  total: number
+  position: number
+  cursor_seq: number
+}
+
+export interface ActivityQueueSnapshot {
+  type: 'buy_food' | 'cash_turntable' | 'cash_monopoly' | 'daily_cash'
+  ordinary: QueueStatus
+  priority: QueueStatus
+}
+
 async function request<T>(path: string, init: RequestInit = {}, requireSession = true): Promise<T> {
   const headers = new Headers(init.headers)
   headers.set('Accept', 'application/json')
@@ -118,6 +131,9 @@ export const adminApi = {
   },
   feedback(limit = 50, offset = 0) {
     return request<{ items: AdminFeedbackRecord[] }>(`/admin/feedback?limit=${limit}&offset=${offset}`)
+  },
+  activityQueues() {
+    return request<{ items: ActivityQueueSnapshot[] }>('/admin/activity-queues')
   },
   setNotice(type: string, content: string) {
     return request<NoticeRecord>('/admin/notice', post({ type, content }))

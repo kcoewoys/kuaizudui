@@ -751,3 +751,65 @@ func TestDailyResetRunsOncePerDay(t *testing.T) {
 	require.NoError(t, db.Model(&domain.ActivityContent{}).Count(&contents).Error)
 	require.Zero(t, contents)
 }
+
+func TestAdminActivityQueuesSnapshotCoversEveryType(t *testing.T) {
+	app, db, _, _ := testPlatform(t)
+	ctx := context.Background()
+	activityType := domain.ActivityCashMonopoly
+
+	snapshots, err := app.AdminActivityQueues(ctx)
+	require.NoError(t, err)
+	require.Len(t, snapshots, 4)
+	for index, snapshot := range snapshots {
+		require.Equal(t, adminActivityOrder[index], snapshot.Type)
+		require.False(t, snapshot.Ordinary.Created)
+		require.False(t, snapshot.Priority.Created)
+	}
+
+	// Publishing builds the ordinary queue while the cursor stays untouched;
+	// the priority queue only exists once boost credit is committed.
+	for _, uid := range []string{"user-a", "user-b", "user-c"} {
+		_, err = app.PublishActivity(ctx, uid, activityType, uid+" invite")
+		require.NoError(t, err)
+	}
+	require.NoError(t, db.Model(&domain.User{}).Where("uid = ?", "user-b").Update("points", 3).Error)
+	_, err = app.BoostActivity(ctx, "user-b", activityType, 1)
+	require.NoError(t, err)
+
+	snapshots, err = app.AdminActivityQueues(ctx)
+	require.NoError(t, err)
+	byType := make(map[string]ActivityQueueSnapshot, len(snapshots))
+	for _, snapshot := range snapshots {
+		byType[snapshot.Type] = snapshot
+	}
+	monopoly := byType[activityType]
+	require.True(t, monopoly.Ordinary.Created)
+	require.Equal(t, int64(3), monopoly.Ordinary.Total)
+	require.Zero(t, monopoly.Ordinary.Position)
+	require.Zero(t, monopoly.Ordinary.CursorSeq)
+	require.True(t, monopoly.Priority.Created)
+	require.Equal(t, int64(1), monopoly.Priority.Total)
+	require.False(t, byType[domain.ActivityBuyFood].Ordinary.Created)
+	require.False(t, byType[domain.ActivityDailyCash].Priority.Created)
+
+	// A priority delivery leaves the ordinary cursor alone, and the parked
+	// priority member still counts toward that queue's total.
+	_, err = app.UseActivity(ctx, "user-a", activityType)
+	require.NoError(t, err)
+	snapshots, err = app.AdminActivityQueues(ctx)
+	require.NoError(t, err)
+	require.Equal(t, activityType, snapshots[2].Type)
+	require.Zero(t, snapshots[2].Ordinary.CursorSeq)
+	require.Equal(t, int64(1), snapshots[2].Priority.Total)
+
+	// Once the priority queue has nothing active left, the next claim moves
+	// the ordinary cursor. User-a already received user-b through the
+	// priority queue, so the cursor lands on user-c — the last member — and
+	// the reported rank wraps back to zero for the next lap.
+	_, err = app.UseActivity(ctx, "user-a", activityType)
+	require.NoError(t, err)
+	snapshots, err = app.AdminActivityQueues(ctx)
+	require.NoError(t, err)
+	require.Positive(t, snapshots[2].Ordinary.CursorSeq)
+	require.Zero(t, snapshots[2].Ordinary.Position)
+}

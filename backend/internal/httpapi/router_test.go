@@ -331,3 +331,50 @@ func TestAdminQRCodeUploadRejectsNonImage(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, upload.Code)
 	require.Contains(t, upload.Body.String(), "only PNG and JPEG")
 }
+
+func TestAdminActivityQueuesRequiresTokenAndListsEveryType(t *testing.T) {
+	router := testRouter(t)
+
+	unauthorized := httptest.NewRecorder()
+	router.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodGet, "/api/v1/admin/activity-queues", nil))
+	require.Equal(t, http.StatusUnauthorized, unauthorized.Code)
+
+	login := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/admin/login", bytes.NewBufferString(`{"phone":"13800000000"}`))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(login, request)
+	require.Equal(t, http.StatusOK, login.Code)
+	var loginBody struct {
+		Data struct {
+			Token string `json:"token"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(login.Body.Bytes(), &loginBody))
+
+	list := httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/api/v1/admin/activity-queues", nil)
+	request.Header.Set("Authorization", "Bearer "+loginBody.Data.Token)
+	router.ServeHTTP(list, request)
+	require.Equal(t, http.StatusOK, list.Code)
+	var body struct {
+		Data struct {
+			Items []struct {
+				Type     string `json:"type"`
+				Ordinary struct {
+					Created bool  `json:"created"`
+					Total   int64 `json:"total"`
+				} `json:"ordinary"`
+				Priority struct {
+					Created bool `json:"created"`
+				} `json:"priority"`
+			} `json:"items"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(list.Body.Bytes(), &body))
+	require.Len(t, body.Data.Items, 4)
+	for index, expected := range []string{"buy_food", "cash_turntable", "cash_monopoly", "daily_cash"} {
+		require.Equal(t, expected, body.Data.Items[index].Type)
+		require.False(t, body.Data.Items[index].Ordinary.Created)
+		require.False(t, body.Data.Items[index].Priority.Created)
+	}
+}
