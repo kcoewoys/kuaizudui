@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import { Activity, ArrowLeft, Coins, LogOut, MessageSquareText, Settings2, ShieldCheck, TicketCheck } from 'lucide-vue-next'
 import { useRouter } from 'vue-router'
 import AdminConfigPanel from '@/components/admin/AdminConfigPanel.vue'
@@ -23,14 +23,12 @@ const toast = ref('')
 let toastTimer: number | undefined
 
 const navigation = [
-  { id: 'recharge' as const, label: '积分充值', description: '充值与操作记录', icon: Coins },
-  { id: 'exchanges' as const, label: '兑换码', description: '生成与使用状态', icon: TicketCheck },
-  { id: 'config' as const, label: '内容配置', description: '公告与交流群', icon: Settings2 },
-  { id: 'feedback' as const, label: '反馈', description: '用户意见与提交时间', icon: MessageSquareText },
-  { id: 'status' as const, label: '状态', description: '排队队列游标监视', icon: Activity },
+  { id: 'recharge' as const, label: '积分充值', icon: Coins },
+  { id: 'exchanges' as const, label: '兑换码', icon: TicketCheck },
+  { id: 'config' as const, label: '内容配置', icon: Settings2 },
+  { id: 'feedback' as const, label: '反馈', icon: MessageSquareText },
+  { id: 'status' as const, label: '状态', icon: Activity },
 ]
-
-const activeItem = computed(() => navigation.find((item) => item.id === activeSection.value) ?? navigation[0])
 
 function showToast(message: string) {
   toast.value = message
@@ -91,14 +89,7 @@ onMounted(() => adminApi.clearSession())
         </header>
 
         <section class="admin-workspace">
-          <header v-if="activeSection !== 'status'" class="admin-topbar">
-            <div>
-              <h1>{{ activeItem.label }}</h1>
-              <p>{{ activeItem.description }}</p>
-            </div>
-          </header>
-
-          <div class="admin-workspace-content" :class="{ 'admin-workspace-content--flush': activeSection === 'status' }">
+          <div class="admin-workspace-content">
             <AdminStatusPanel v-if="activeSection === 'status'" @session-expired="sessionExpired" @message="showToast" />
             <AdminRechargePanel v-else-if="activeSection === 'recharge'" @session-expired="sessionExpired" @message="showToast" />
             <AdminExchangePanel v-else-if="activeSection === 'exchanges'" @session-expired="sessionExpired" @message="showToast" />

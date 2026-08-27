@@ -158,24 +158,6 @@
   min-height: calc(var(--app-viewport-height) - 60px);
 }
 
-.admin-topbar {
-  padding: 20px 16px 13px;
-}
-
-.admin-topbar h1 {
-  margin: 0;
-  font-size: 22px;
-  line-height: 1.2;
-  letter-spacing: -0.025em;
-}
-
-.admin-topbar p {
-  margin: 5px 0 0;
-  color: #5b6b76;
-  font-size: 13px;
-  line-height: 1.4;
-}
-
 .admin-status {
   display: inline-flex;
   align-items: center;
@@ -185,11 +167,9 @@
 }
 
 .admin-workspace-content {
-  padding: 0 12px calc(94px + env(safe-area-inset-bottom));
+  padding: 12px 12px calc(94px + env(safe-area-inset-bottom));
   animation: admin-content-enter 360ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
-
-.admin-workspace-content--flush { padding-top: 12px; }
 
 .admin-nav {
   width: min(100%, 480px);

@@ -248,15 +248,39 @@ a {
 }
 
 .activity-card--featured {
-  min-height: 88px;
-  border-color: #cfe2d5;
-  background: linear-gradient(120deg, #ffffff 62%, #f1fbf5);
-  box-shadow: 0 7px 18px rgba(0, 110, 42, 0.09);
+  min-height: 116px;
+  grid-template-columns: 62px 1fr 24px;
+  gap: 14px;
+  padding: 14px 16px;
+  border-color: #a9d8bb;
+  border-radius: 18px;
+  background: linear-gradient(120deg, #ffffff 45%, #e4faf0 100%);
+  box-shadow: 0 10px 24px rgba(0, 110, 42, 0.16), 0 2px 6px rgba(0, 110, 42, 0.08);
 }
 
 .activity-card--featured .activity-mark {
-  width: 50px;
-  height: 50px;
+  width: 62px;
+  height: 62px;
+  border-radius: 16px;
+}
+
+.activity-card--featured .activity-copy {
+  gap: 5px;
+}
+
+.activity-card--featured .activity-copy strong {
+  font-size: 17px;
+  letter-spacing: -0.01em;
+}
+
+.activity-card--featured .activity-copy small {
+  color: #2f7d4f;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.activity-card--featured .activity-chevron {
+  color: var(--primary);
 }
 
 .activity-mark {
