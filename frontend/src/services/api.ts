@@ -146,13 +146,19 @@ export async function subscribeActivityUpdates(
   onUpdate: (event: ActivityUpdateEvent) => void,
   signal: AbortSignal,
   onConnected?: () => void,
+  activityType?: string,
 ) {
   await waitForReferral()
   const headers = new Headers({ Accept: 'text/event-stream' })
   const uid = userSessionUID()
   if (uid) headers.set('X-UID', uid)
 
-  const response = await fetch(`${apiBase}/activity/events`, {
+  // Subscribing with the activity type widens the stream to that activity's
+  // broadcast, so other users' publishes reach this page as well.
+  const eventsUrl = activityType
+    ? `${apiBase}/activity/events?type=${encodeURIComponent(activityType)}`
+    : `${apiBase}/activity/events`
+  const response = await fetch(eventsUrl, {
     headers,
     signal,
     cache: 'no-store',

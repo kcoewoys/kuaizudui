@@ -164,6 +164,56 @@ func TestActivityEventsStreamUpdatesThePublisherAfterAClaim(t *testing.T) {
 	require.JSONEq(t, `{"type":"buy_food"}`, strings.TrimPrefix(strings.TrimSpace(eventData), "data: "))
 }
 
+func TestActivityEventsStreamBroadcastsAnotherUsersPublish(t *testing.T) {
+	router, _, _ := testRouterComponents(t)
+	server := httptest.NewServer(router)
+	t.Cleanup(server.Close)
+
+	publish := func(uid, content string) {
+		request, err := http.NewRequest(http.MethodPost, server.URL+"/api/v1/activity/publish", bytes.NewBufferString(
+			fmt.Sprintf(`{"type":"buy_food","content":%q}`, content),
+		))
+		require.NoError(t, err)
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("X-UID", uid)
+		response, err := server.Client().Do(request)
+		require.NoError(t, err)
+		defer func() { _ = response.Body.Close() }()
+		require.Equal(t, http.StatusOK, response.StatusCode)
+	}
+
+	publish("broadcast-owner", "owner invitation")
+
+	// The watcher subscribes with the activity type, so publishes by other
+	// users reach them through the broadcast channel and the claim button can
+	// ungray without a manual reload.
+	streamContext, cancelStream := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancelStream()
+	streamRequest, err := http.NewRequestWithContext(streamContext, http.MethodGet, server.URL+"/api/v1/activity/events?type=buy_food", nil)
+	require.NoError(t, err)
+	streamRequest.Header.Set("X-UID", "broadcast-watcher")
+	streamResponse, err := server.Client().Do(streamRequest)
+	require.NoError(t, err)
+	defer func() { _ = streamResponse.Body.Close() }()
+	require.Equal(t, http.StatusOK, streamResponse.StatusCode)
+
+	reader := bufio.NewReader(streamResponse.Body)
+	connected, err := reader.ReadString('\n')
+	require.NoError(t, err)
+	require.Equal(t, ": connected\n", connected)
+	_, err = reader.ReadString('\n')
+	require.NoError(t, err)
+
+	publish("broadcast-newcomer", "newcomer invitation")
+
+	eventName, err := reader.ReadString('\n')
+	require.NoError(t, err)
+	require.Equal(t, "event: activity\n", eventName)
+	eventData, err := reader.ReadString('\n')
+	require.NoError(t, err)
+	require.JSONEq(t, `{"type":"buy_food"}`, strings.TrimPrefix(strings.TrimSpace(eventData), "data: "))
+}
+
 func TestAdminEndpointsRequireTokenAndCanCreateCodes(t *testing.T) {
 	router := testRouter(t)
 

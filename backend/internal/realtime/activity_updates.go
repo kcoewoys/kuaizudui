@@ -7,7 +7,10 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-const activityUpdateChannelPrefix = "activity_updates:"
+const (
+	activityUpdateChannelPrefix  = "activity_updates:"
+	activityBroadcastPrefix      = "activity_updates:activity:"
+)
 
 type ActivityUpdates struct {
 	client redis.UniversalClient
@@ -24,8 +27,26 @@ func (u *ActivityUpdates) Publish(ctx context.Context, uid, activityType string)
 	return nil
 }
 
-func (u *ActivityUpdates) Subscribe(ctx context.Context, uid string) (*redis.PubSub, error) {
-	subscription := u.client.Subscribe(ctx, activityUpdateChannel(uid))
+// PublishAll fans an event out to every client watching the activity type —
+// queue composition changes (publish, boost, claim) reshape everyone's
+// availability, not only the owner involved.
+func (u *ActivityUpdates) PublishAll(ctx context.Context, activityType string) error {
+	if err := u.client.Publish(ctx, activityBroadcastChannel(activityType), activityType).Err(); err != nil {
+		return fmt.Errorf("publish activity broadcast: %w", err)
+	}
+	return nil
+}
+
+// Subscribe follows the user's personal channel plus the broadcast channel of
+// each given activity type; empty types are ignored.
+func (u *ActivityUpdates) Subscribe(ctx context.Context, uid string, activityTypes ...string) (*redis.PubSub, error) {
+	channels := []string{activityUpdateChannel(uid)}
+	for _, activityType := range activityTypes {
+		if activityType != "" {
+			channels = append(channels, activityBroadcastChannel(activityType))
+		}
+	}
+	subscription := u.client.Subscribe(ctx, channels...)
 	if _, err := subscription.Receive(ctx); err != nil {
 		_ = subscription.Close()
 		return nil, fmt.Errorf("subscribe to activity updates: %w", err)
@@ -35,4 +56,8 @@ func (u *ActivityUpdates) Subscribe(ctx context.Context, uid string) (*redis.Pub
 
 func activityUpdateChannel(uid string) string {
 	return activityUpdateChannelPrefix + uid
+}
+
+func activityBroadcastChannel(activityType string) string {
+	return activityBroadcastPrefix + activityType
 }

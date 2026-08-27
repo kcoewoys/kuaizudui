@@ -53,14 +53,14 @@ func (q *ActivityQueue) NextOrdinary(ctx context.Context, activityType, claimant
 
 // NextByCursor advances the ordinary queue's FIFO cursor and returns the
 // member it lands on. Traversal follows the enqueue sequence (the absolute
-// score) so publish order survives count changes; the claimant is always
-// skipped, as is everyone this claimant has already received and every parked
-// member whose chances are used up (negative score). When no fresh publisher
-// remains past the cursor the selection wraps to the oldest unserved member,
-// and once every publisher has served this claimant the call reports
-// ErrQueueEmpty — a claimant is never handed the same content twice. Entries
-// are never removed by this, so publishers keep their place while parked and
-// return to it once they earn chances again.
+// score) so publish order survives count changes; the claimant itself,
+// parked members whose chances are used up (negative score), and everyone
+// this claimant has already received are always skipped — a claimant is
+// never handed the same content twice, so once every publisher has served
+// them the call reports ErrQueueEmpty. Serving the last member of a lap
+// resets the cursor to the head, so a member publishing later never
+// overtakes the pending rotation: the cursor is moved by successful claims
+// alone.
 func (q *ActivityQueue) NextByCursor(ctx context.Context, activityType, claimantUID string, exclude []string) (string, error) {
 	args := make([]any, 0, len(exclude)+1)
 	args = append(args, claimantUID)
@@ -338,13 +338,15 @@ return ''
 
 // nextByCursorScript advances the cursor stored at KEYS[2] and returns the
 // member it lands on, in two tiers: the first member past the cursor that is
-// neither the claimant nor excluded (already served by this claimant) nor
-// parked with its chances used up (negative score); failing that the earliest
-// such member from the top of the queue (the wrap-around onto a fresh lap).
-// Excluded and parked members are never chosen — when everyone has already
-// served the claimant or is out of chances the script returns empty and the
-// caller reports that no code is available. The cursor only advances when a
-// member is actually chosen.
+// neither the claimant nor excluded (already served to this claimant, ever);
+// failing that the earliest such member from the top of the queue (the
+// wrap-around). Excluded and parked members (negative score) are never
+// chosen — once every publisher has served the claimant, or every other
+// member is out of chances, the script returns empty and the caller reports
+// that no code is available. Serving the member with the highest sequence
+// resets the cursor to zero: a lap that ended keeps its place at the head,
+// so a member publishing later only ever joins behind the pending rotation —
+// the cursor is moved by successful claims alone.
 var nextByCursorScript = redis.NewScript(`
 local self = ARGV[1]
 local excluded = {}
@@ -352,22 +354,24 @@ for i = 2, #ARGV do excluded[ARGV[i]] = true end
 local members = redis.call('ZRANGE', KEYS[1], 0, -1, 'WITHSCORES')
 if #members == 0 then return '' end
 local cursor = tonumber(redis.call('GET', KEYS[2]) or '0')
-local freshAfter, freshAfterSeq, freshAny, freshAnySeq
+local freshAfter, freshAfterSeq, freshAny, freshAnySeq, maxSeq
 for i = 1, #members, 2 do
   local uid = members[i]
   local score = tonumber(members[i + 1])
-  if uid ~= self and score > 0 then
-    if not excluded[uid] then
-      if not freshAnySeq or score < freshAnySeq then freshAny, freshAnySeq = uid, score end
-      if score > cursor and (not freshAfterSeq or score < freshAfterSeq) then freshAfter, freshAfterSeq = uid, score end
-    end
+  local seq = math.abs(score)
+  if not maxSeq or seq > maxSeq then maxSeq = seq end
+  if uid ~= self and score > 0 and not excluded[uid] then
+    if not freshAnySeq or seq < freshAnySeq then freshAny, freshAnySeq = uid, seq end
+    if seq > cursor and (not freshAfterSeq or seq < freshAfterSeq) then freshAfter, freshAfterSeq = uid, seq end
   end
 end
 local chosen, chosenSeq
 if freshAfter then chosen, chosenSeq = freshAfter, freshAfterSeq
 else chosen, chosenSeq = freshAny, freshAnySeq end
 if not chosen then return '' end
-redis.call('SET', KEYS[2], chosenSeq)
+local nextCursor = 0
+if chosenSeq < maxSeq then nextCursor = chosenSeq end
+redis.call('SET', KEYS[2], nextCursor)
 return chosen
 `)
 

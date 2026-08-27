@@ -108,6 +108,28 @@ func TestActivityClaimPublishesRealtimeUpdateToOwner(t *testing.T) {
 	}
 }
 
+func TestActivityPublishBroadcastsRealtimeUpdateToWatchers(t *testing.T) {
+	app, _, _, _ := testPlatform(t)
+	ctx := context.Background()
+	activityType := domain.ActivityBuyFood
+
+	// The watcher holds no publication; the broadcast must still reach them so
+	// the claim button ungrays the moment someone else publishes.
+	subscription, err := app.updates.Subscribe(ctx, "watcher", activityType)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = subscription.Close() })
+
+	_, err = app.PublishActivity(ctx, "publisher", activityType, "fresh invitation")
+	require.NoError(t, err)
+
+	select {
+	case message := <-subscription.Channel():
+		require.Equal(t, activityType, message.Payload)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for the publish broadcast")
+	}
+}
+
 func TestActivityClaimIncrementsClaimantCountAndContentOwnerRound(t *testing.T) {
 	app, db, _, _ := testPlatform(t)
 	ctx := context.Background()
@@ -148,8 +170,8 @@ func TestActivityClaimStopsOnceEveryFreshPublisherIsServed(t *testing.T) {
 	first, err := app.UseActivity(ctx, "claimant", activityType)
 	require.NoError(t, err)
 	require.Equal(t, "owner invitation", first.Content)
-	// No fresh publisher is left, so the claim stops instead of serving the
-	// same content twice.
+	// No fresh publisher is left — a publisher never serves the same claimant
+	// twice — so the claim stops instead of repeating content.
 	_, err = app.UseActivity(ctx, "claimant", activityType)
 	require.ErrorIs(t, err, domain.ErrQueueEmpty)
 	// A failed claim leaves every counter untouched.
@@ -181,10 +203,67 @@ func TestActivityAvailabilityRequiresAnotherEligiblePublisher(t *testing.T) {
 
 	claimed, err := app.UseActivity(ctx, "user-a", activityType)
 	require.NoError(t, err)
-	require.True(t, claimed.State.CanClaim)
+	// user-a has received from the only other publisher — a publisher never
+	// serves the same claimant twice — so the button grays out again.
+	require.False(t, claimed.State.CanClaim)
 	userB, err := app.ActivityDetail(ctx, "user-b", activityType)
 	require.NoError(t, err)
 	require.True(t, userB.CanClaim)
+
+	_, err = app.UseActivity(ctx, "user-b", activityType)
+	require.NoError(t, err)
+	userB, err = app.ActivityDetail(ctx, "user-b", activityType)
+	require.NoError(t, err)
+	require.False(t, userB.CanClaim)
+}
+
+func TestActivityClaimMutualExchangeWrapsCursorAndGraysOut(t *testing.T) {
+	app, _, _, _ := testPlatform(t)
+	ctx := context.Background()
+	activityType := domain.ActivityBuyFood
+
+	_, err := app.PublishActivity(ctx, "user-a", activityType, "invite-a")
+	require.NoError(t, err)
+	solo, err := app.ActivityDetail(ctx, "user-a", activityType)
+	require.NoError(t, err)
+	require.False(t, solo.CanClaim)
+
+	_, err = app.PublishActivity(ctx, "user-b", activityType, "invite-b")
+	require.NoError(t, err)
+	pair, err := app.ActivityDetail(ctx, "user-a", activityType)
+	require.NoError(t, err)
+	require.True(t, pair.CanClaim)
+
+	// user-b claims user-a: the shared cursor advances onto user-a.
+	claimedByB, err := app.UseActivity(ctx, "user-b", activityType)
+	require.NoError(t, err)
+	require.Equal(t, "invite-a", claimedByB.Content)
+	status, err := app.activity.OrdinaryStatus(ctx, activityType)
+	require.NoError(t, err)
+	require.Equal(t, int64(2), status.Total)
+	require.Equal(t, int64(1), status.Position)
+
+	// user-a claims user-b: the cursor passes the end of the queue and wraps
+	// back to the head instead of stalling.
+	claimedByA, err := app.UseActivity(ctx, "user-a", activityType)
+	require.NoError(t, err)
+	require.Equal(t, "invite-b", claimedByA.Content)
+	status, err = app.activity.OrdinaryStatus(ctx, activityType)
+	require.NoError(t, err)
+	require.Zero(t, status.Position)
+
+	// Everyone has served everyone once: further clicks report an empty queue
+	// without serving duplicates, and both buttons gray out.
+	_, err = app.UseActivity(ctx, "user-a", activityType)
+	require.ErrorIs(t, err, domain.ErrQueueEmpty)
+	_, err = app.UseActivity(ctx, "user-b", activityType)
+	require.ErrorIs(t, err, domain.ErrQueueEmpty)
+	exhaustedA, err := app.ActivityDetail(ctx, "user-a", activityType)
+	require.NoError(t, err)
+	require.False(t, exhaustedA.CanClaim)
+	exhaustedB, err := app.ActivityDetail(ctx, "user-b", activityType)
+	require.NoError(t, err)
+	require.False(t, exhaustedB.CanClaim)
 }
 
 func TestActivityBoostServesPriorityBeforeOrdinary(t *testing.T) {
@@ -807,11 +886,13 @@ func TestAdminActivityQueuesSnapshotCoversEveryType(t *testing.T) {
 	// Once the priority queue has nothing active left, the next claim moves
 	// the ordinary cursor. User-a already received user-b through the
 	// priority queue, so the cursor lands on user-c — the last member — and
-	// the reported rank wraps back to zero for the next lap.
+	// completing the lap resets the stored cursor to zero: the rotation
+	// restarts at the head, so a publisher joining later can never cut in
+	// front of the members the lap has not reached yet.
 	_, err = app.UseActivity(ctx, "user-a", activityType)
 	require.NoError(t, err)
 	snapshots, err = app.AdminActivityQueues(ctx)
 	require.NoError(t, err)
-	require.Positive(t, snapshots[2].Ordinary.CursorSeq)
+	require.Zero(t, snapshots[2].Ordinary.CursorSeq)
 	require.Zero(t, snapshots[2].Ordinary.Position)
 }

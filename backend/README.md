@@ -89,14 +89,15 @@ MySQL 是最终事实来源：账号、积分、轮数与额度、福袋码状�
 | --- | --- | --- |
 | `activity_queue:{type}:ordinary:zset`、`activity_queue:{type}:priority:zset` | ZSet | 队列成员（member = uid）；score 绝对值 = 入队序号定 FIFO 位，符号 = 额度是否大于 0 |
 | `activity_queue:{type}:ordinary:counts`、`activity_queue:{type}:priority:counts` | Hash | uid → 队列剩余额度 |
-| `activity_queue:{type}:cursor` | String | 普通队列共享 FIFO 轮询游标 |
+| `activity_queue:{type}:cursor` | String | 普通队列共享 FIFO 轮询游标；只被成功领取推进，服务到队尾后归零回到队首 |
 | `activity_queue:seq` | String | 全局入队序号发号器（首次使用时按毫秒时间戳播种防回拨） |
 | `activity_queue:{type}:seeded` | String | 队列已按 MySQL 播种的标记 |
 | `lucky_queue` | List | 待领取福袋码（`id\|uid`），LPUSH + RPOP 实现 FIFO，Lua 原子跳过本人并防重 |
 | `lucky_used:{id}` | String | 福袋码领取占用，TTL = `lucky_claim_ttl`（默认 24h） |
 | `admin_session:{token}` | String | 管理员会话（值 = 手机号），TTL = `admin_session_ttl`（默认 12h） |
 | `first_visit:{uid}` | String | 首次访问标记，TTL = `first_visit_ttl`（默认 365 天） |
-| `activity_updates:{uid}` | Pub/Sub | SSE 实时通知频道，不落盘、重置无影响 |
+| `activity_updates:{uid}` | Pub/Sub | SSE 实时通知频道（本人内容被领取），不落盘、重置无影响 |
+| `activity_updates:activity:{type}` | Pub/Sub | SSE 活动全员广播频道：他人发布、插队、领取成功后触发，刷新各端可领状态 |
 
 ### 每日重置
 
@@ -134,7 +135,7 @@ MySQL 是最终事实来源：账号、积分、轮数与额度、福袋码状�
 | `GET` | `/api/v1/activity/detail?type=...` | 查询自己的活动内容 |
 | `POST` | `/api/v1/activity/boost` | 提交积分并加入活动插队队列 |
 | `POST` | `/api/v1/activity/use` | 优先从插队队列、再从普通队列领取其他用户内容；不能领取本人的及已领过的 |
-| `GET` | `/api/v1/activity/events` | SSE 实时推送本人活动轮次更新 |
+| `GET` | `/api/v1/activity/events?type=...` | SSE 实时推送活动更新：本人内容被领取，带 `type` 时同时订阅该活动的全员广播（他人发布/插队/领取） |
 | `GET` | `/api/v1/points` | 查询积分 |
 | `GET` | `/api/v1/points/history` | 查询加分来源记录；不返回扣分和零积分记录 |
 | `POST` | `/api/v1/exchange` | 使用兑换码 |
@@ -175,7 +176,7 @@ MySQL 是最终事实来源：账号、积分、轮数与额度、福袋码状�
 ### 状态转移
 
 - **首次发布**：`used_count = 0`、`ordinary_credit` 按发布赠送次数配置赠送——发布即以活跃状态进入普通队列轮转。重新发布（修改内容）只更新内容，不改变任何计数，次数用尽后不能靠编辑内容恢复。
-- **点击一键领码且领到内容**：领取人 `used_count + 1`、`ordinary_credit + 1`，计数与领取在同一事务内提交。没有可领的新内容时领取失败并返回“暂时无码可领”，不产生任何计数。
+- **点击一键领码且领到内容**：领取人 `used_count + 1`、`ordinary_credit + 1`，计数与领取在同一事务内提交。没有可领的新内容时（所有发布者都已服务过本人、他人次数用尽或队列只有本人）领取失败并返回“暂时无码可领”，不产生任何计数。
 - **内容被领取**：命中普通队列时发布者 `ordinary_rounds + 1`、`ordinary_credit - 1`；命中插队队列时 `boost_rounds + 1`、`priority_credit - 1`。
 - **额度归零**：成员保留在队列原位但被跳过（停泊）；再次领码后从原位置恢复参与。
 - **不能领取自己发布的内容**（选取时跳过本人）。
@@ -198,7 +199,7 @@ activity_queue:{activityType}:seeded                队列已按 MySQL 初始化
 - **绝对值 = 入队序号**，决定 FIFO 位置，一经分配永不改变；额度归零再恢复时仍占原位。
 - **符号 = 参与开关**：正数表示计数 > 0、可被选取；负数表示计数已归零、原地停泊跳过。
 
-计数加减由 Lua 原子完成，跨越 0 边界时只翻转符号、不触碰位置。插队队列选取使用 `ZRANGEBYSCORE (0 +inf LIMIT 0 N` 取最早入队的活跃成员并跳过本人与已领过的发布者；普通队列由共享游标 `cursor` 按发布顺序轮转——跳过本人、已领过的发布者与已停泊（次数用尽）的成员，走到队尾后绕回队首继续找未领过的活跃成员；当所有发布者都已服务过该领取人时返回空，领取以“暂时无码可领”结束，绝不重复发放。成员不会被普通领取移除，停泊者攒回次数后从原位置恢复参与。全部操作 O(log N)，停泊的死成员不会阻塞队头。
+计数加减由 Lua 原子完成，跨越 0 边界时只翻转符号、不触碰位置。插队队列选取使用 `ZRANGEBYSCORE (0 +inf LIMIT 0 N` 取最早入队的活跃成员并跳过本人与已领过的发布者；普通队列由共享游标 `cursor` 按发布顺序轮转，**只被成功领取推进**——跳过本人、已领过的发布者与已停泊（次数用尽）的成员，走到队尾后归零回到队首继续找未领过的活跃成员；当所有发布者都已服务过该领取人时返回空，领取以“暂时无码可领”结束，绝不重复发放。发布新成员只追加到队尾：游标走完一圈后指向队首，新发布者排在轮转末尾，绝不会插到未被服务过的成员前面。成员不会被普通领取移除，停泊者攒回次数后从原位置恢复参与。全部操作 O(log N)，停泊的死成员不会阻塞队头。
 
 ### 候选选择顺序
 
@@ -215,13 +216,15 @@ API 启动时清空所有活动类型的 Redis 队列和 `seeded` 标记；每�
 
 ### 领取按钮状态
 
-`can_claim` 只检查 MySQL 中是否存在其他用户发布的当前活动内容，不看额度：
+`can_claim` 检查 MySQL 中是否存在“本人未领取过、且还持有普通或插队额度”的其他发布者：
 
 ```text
 type = 当前活动 AND uid != 当前用户
+AND (ordinary_credit > 0 OR priority_credit > 0)
+AND uid NOT IN (该用户在本活动的领取记录中的发布者)
 ```
 
-只有自己发布时按钮置灰；他人额度耗尽或都已被本人领取时按钮仍可点击，点击后提示暂无可领内容，领取失败、不累计领码次数。
+只有自己发布、他人额度全部耗尽、或可领者都已被本人领取过时按钮置灰。实时性由广播事件保证：他人发布、插队、领取成功（额度变动）都会向 `activity_updates:activity:{type}` 广播，各端收到后刷新详情，按钮状态即时变化；事件丢失时以下次详情查询为准。
 
 ### 主要实现位置
 

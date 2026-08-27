@@ -226,7 +226,7 @@ export function useInviteActivity(config: InviteActivityConfig) {
     }, controller.signal, () => {
       reconnectDelay = 1000
       void refreshStatus()
-    }).catch(() => {
+    }, config.type).catch(() => {
       // Reconnection is scheduled below unless the page is hidden or unmounted.
     }).finally(() => {
       if (eventsAbortController === controller) eventsAbortController = undefined

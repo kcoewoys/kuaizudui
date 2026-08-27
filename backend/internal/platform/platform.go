@@ -590,6 +590,9 @@ func (p *Platform) PublishActivity(ctx context.Context, uid, activityType, conte
 			return ActivityResult{}, err
 		}
 	}
+	// A new participant (or fresh priority credit) reshapes every watcher's
+	// availability, so the change is broadcast to the whole activity.
+	p.broadcastActivityUpdate(ctx, activityType)
 	return p.activityResultWithAvailability(ctx, uid, item)
 }
 
@@ -662,6 +665,7 @@ func (p *Platform) BoostActivity(ctx context.Context, uid, activityType string, 
 		slog.WarnContext(ctx, "add priority activity credit failed", "type", activityType, "error", err)
 		_ = p.activity.InvalidateSeed(queueCtx, activityType)
 	}
+	p.broadcastActivityUpdate(ctx, activityType)
 	return p.ActivityDetail(ctx, uid, activityType)
 }
 
@@ -792,13 +796,14 @@ func (p *Platform) claimPriorityActivity(ctx context.Context, claimant domain.Ac
 }
 
 // claimCursorActivity serves ordinary claims through the activity's FIFO
-// cursor: one shared position that walks the queue in publish order and skips
-// the claimant themselves, every publisher this claimant has already received,
-// and publishers whose granted chances are used up (parked). When no publisher
-// is left to serve the claimant it reports ErrQueueEmpty, so a click that has
-// exhausted everyone fails cleanly instead of handing out a duplicate.
-// Publishers park when their chances run out and re-activate through the
-// chance they earn with each of their own claim clicks.
+// cursor: one shared position that only successful claims advance, walking
+// the queue in publish order. It skips the claimant themselves, publishers
+// whose granted chances are used up (parked), and every publisher this
+// claimant has already received — a publisher's content serves a given
+// claimant at most once, ever, so once everyone has served them the claim
+// reports ErrQueueEmpty. Publishers park when their chances run out and
+// re-activate through the chance they earn with each of their own claim
+// clicks.
 func (p *Platform) claimCursorActivity(ctx context.Context, claimant domain.ActivityContent, activityType string, claimed []string) (ActivityUseResult, error) {
 	for attempt := 0; attempt < maxActivityQueueAttempts; attempt++ {
 		candidateUID, err := p.activity.NextByCursor(ctx, activityType, claimant.UID, claimed)
@@ -822,9 +827,10 @@ func (p *Platform) claimCursorActivity(ctx context.Context, claimant domain.Acti
 
 // deliverCursorActivity hands the cursor-selected publisher's content to the
 // claimant. The claim record keeps one row per claimant-publisher pair — it
-// drives the exclusion list that keeps served publishers from being picked
-// again — and serving costs the publisher one of their ordinary chances, so a
-// first publish is served at most three times until more chances are earned.
+// drives the exclusion list that keeps served publishers from ever being
+// picked again for that claimant — and serving costs the publisher one of
+// their ordinary chances, so a first publish is served at most three times
+// until more chances are earned.
 func (p *Platform) deliverCursorActivity(
 	ctx context.Context,
 	claimant domain.ActivityContent,
@@ -873,6 +879,9 @@ func (p *Platform) deliverCursorActivity(
 	defer cancelNotify()
 	if err := p.updates.Publish(notifyContext, candidateUID, activityType); err != nil {
 		slog.WarnContext(ctx, "activity update notification failed", "type", activityType, "error", err)
+	}
+	if err := p.updates.PublishAll(notifyContext, activityType); err != nil {
+		slog.WarnContext(ctx, "activity update broadcast failed", "type", activityType, "error", err)
 	}
 	return ActivityUseResult{
 		Content: candidate.Content,
@@ -936,6 +945,9 @@ func (p *Platform) deliverPriorityActivity(
 	defer cancelNotify()
 	if err := p.updates.Publish(notifyContext, candidateUID, activityType); err != nil {
 		slog.WarnContext(ctx, "activity update notification failed", "type", activityType, "error", err)
+	}
+	if err := p.updates.PublishAll(notifyContext, activityType); err != nil {
+		slog.WarnContext(ctx, "activity update broadcast failed", "type", activityType, "error", err)
 	}
 	return ActivityUseResult{
 		Content: candidate.Content,
@@ -1104,10 +1116,28 @@ func (p *Platform) activityUseResultWithAvailability(
 	return result, nil
 }
 
+// broadcastActivityUpdate fans a best-effort realtime event out to every
+// client watching the activity type.
+func (p *Platform) broadcastActivityUpdate(ctx context.Context, activityType string) {
+	notifyContext, cancelNotify := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+	defer cancelNotify()
+	if err := p.updates.PublishAll(notifyContext, activityType); err != nil {
+		slog.WarnContext(ctx, "activity update broadcast failed", "type", activityType, "error", err)
+	}
+}
+
+// canClaimActivity reports whether a claim click could succeed right now:
+// some other publisher still holds ordinary or priority chances this claimant
+// has not received yet — a publisher's content serves a given claimant at
+// most once, ever.
 func (p *Platform) canClaimActivity(ctx context.Context, uid, activityType string) (bool, error) {
 	var count int64
+	received := p.db.WithContext(ctx).Model(&domain.ActivityClaim{}).
+		Select("publisher_uid").
+		Where("claimant_uid = ? AND type = ?", uid, activityType)
 	err := p.db.WithContext(ctx).Model(&domain.ActivityContent{}).
-		Where("type = ? AND uid <> ?", activityType, uid).
+		Where("type = ? AND uid <> ? AND (ordinary_credit > 0 OR priority_credit > 0)", activityType, uid).
+		Where("uid NOT IN (?)", received).
 		Count(&count).Error
 	if err != nil {
 		return false, fmt.Errorf("check activity availability: %w", err)

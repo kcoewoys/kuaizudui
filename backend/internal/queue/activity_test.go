@@ -164,6 +164,17 @@ func TestActivityQueueCursorWalksFIFOAndLoops(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, expected, uid)
 	}
+
+	// A late publisher only ever joins behind the pending rotation: serving
+	// the tail member resets the cursor to the head, so the newcomer waits
+	// their turn instead of cutting in front of members not yet served this
+	// lap — the cursor is moved by claims alone, never by publishing.
+	require.NoError(t, activityQueue.EnqueueOrdinary(ctx, domain.ActivityBuyFood, "user-d", 2))
+	for _, expected := range []string{"user-a", "user-b", "user-c", "user-d", "user-a"} {
+		uid, err := activityQueue.NextByCursor(ctx, domain.ActivityBuyFood, "other", nil)
+		require.NoError(t, err)
+		require.Equal(t, expected, uid)
+	}
 }
 
 func TestActivityQueueCursorSkipsSelfAndAlreadyServed(t *testing.T) {
@@ -244,11 +255,10 @@ func TestActivityQueueStatusReportsCursorRankAndTotals(t *testing.T) {
 	require.Zero(t, status.Position)
 	require.Zero(t, status.CursorSeq)
 
-	// The reported rank follows the member the cursor last landed on and
-	// wraps back to zero once the whole queue has been served. The raw
-	// sequence is timestamp-seeded, so only its growth is asserted. The
-	// parked member earns a chance first because the cursor only walks
-	// active publishers.
+	// The reported rank follows the member the cursor last landed on. The raw
+	// sequence is timestamp-seeded, so only its growth is asserted. The parked
+	// member earns a chance first because the cursor only walks active
+	// publishers.
 	require.NoError(t, activityQueue.AddOrdinary(ctx, domain.ActivityBuyFood, "user-b", 1))
 	_, err = activityQueue.NextByCursor(ctx, domain.ActivityBuyFood, "other", nil)
 	require.NoError(t, err)
@@ -258,13 +268,19 @@ func TestActivityQueueStatusReportsCursorRankAndTotals(t *testing.T) {
 	require.Equal(t, int64(1), status.Position)
 	firstCursor := status.CursorSeq
 
-	_, err = activityQueue.NextByCursor(ctx, domain.ActivityBuyFood, "other", nil)
-	require.NoError(t, err)
+	// The second claim lands past the first; the third serves the tail member
+	// and completes the lap, resetting the stored cursor to zero so a member
+	// publishing later joins behind the rotation instead of in front of it.
 	_, err = activityQueue.NextByCursor(ctx, domain.ActivityBuyFood, "other", nil)
 	require.NoError(t, err)
 	status, err = activityQueue.OrdinaryStatus(ctx, domain.ActivityBuyFood)
 	require.NoError(t, err)
 	require.Greater(t, status.CursorSeq, firstCursor)
+	_, err = activityQueue.NextByCursor(ctx, domain.ActivityBuyFood, "other", nil)
+	require.NoError(t, err)
+	status, err = activityQueue.OrdinaryStatus(ctx, domain.ActivityBuyFood)
+	require.NoError(t, err)
+	require.Zero(t, status.CursorSeq)
 	require.Zero(t, status.Position)
 
 	// The priority queue keeps no cursor of its own: only existence and the

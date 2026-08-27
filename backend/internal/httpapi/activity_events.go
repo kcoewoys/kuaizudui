@@ -16,7 +16,9 @@ type activityEvent struct {
 }
 
 func (s *Server) activityEvents(c *gin.Context) {
-	subscription, err := s.activityUpdates.Subscribe(c.Request.Context(), uid(c))
+	// The optional type widens the stream from the caller's personal channel
+	// to that activity's broadcast, so publishes by other users arrive too.
+	subscription, err := s.activityUpdates.Subscribe(c.Request.Context(), uid(c), c.Query("type"))
 	if err != nil {
 		fail(c, err)
 		return
