@@ -127,11 +127,26 @@ export function userSessionUID() {
   return window.localStorage.getItem(uidStorageKey) || ''
 }
 
+// 邀请归因请求（/user/referral）会创建带 invited_by_uid 的匿名用户；其余也会
+// 创建用户的请求（/user/info、/activity/events）必须等它结束后再发，否则同一
+// 访客会分裂成多个用户，邀请关系随竞态丢失。
+let referralGate: Promise<unknown> | null = null
+
+export function setReferralGate(pending: Promise<unknown> | null) {
+  referralGate = pending
+}
+
+export function waitForReferral(): Promise<void> {
+  if (!referralGate) return Promise.resolve()
+  return referralGate.then(() => undefined, () => undefined)
+}
+
 export async function subscribeActivityUpdates(
   onUpdate: (event: ActivityUpdateEvent) => void,
   signal: AbortSignal,
   onConnected?: () => void,
 ) {
+  await waitForReferral()
   const headers = new Headers({ Accept: 'text/event-stream' })
   const uid = userSessionUID()
   if (uid) headers.set('X-UID', uid)

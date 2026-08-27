@@ -1,5 +1,5 @@
 import { reactive } from 'vue'
-import { api, type UserInfo } from './api'
+import { api, setReferralGate, waitForReferral, type UserInfo } from './api'
 
 export const userState = reactive({
   uid: '',
@@ -24,6 +24,9 @@ function applyUser(user: UserInfo) {
 }
 
 export async function loadUser(force = false) {
+  if (userState.loaded && !force) return userState
+  if (pendingLoad) return pendingLoad
+  await waitForReferral()
   if (userState.loaded && !force) return userState
   if (pendingLoad) return pendingLoad
   userState.loading = true
@@ -52,8 +55,10 @@ export function captureReferralFromUrl() {
       url.searchParams.delete('ref')
       window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`)
     })
+  setReferralGate(request)
   referralPending = request.finally(() => {
     referralPending = null
+    setReferralGate(null)
   })
   return referralPending
 }
