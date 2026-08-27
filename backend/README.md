@@ -1,6 +1,6 @@
 # kuaizudui backend
 
-Go + Gin + Gorm + MySQL + Redis 后端。启动时自动迁移数据库结构，福袋队列使用 Redis List 和 Lua 脚本保证 FIFO、跳过本人内容并原子防重。
+Go + Gin + Gorm + MySQL + Redis 后端。启动时自动创建缺失的数据库并迁移表结构，福袋队列使用 Redis List 和 Lua 脚本保证 FIFO、跳过本人内容并原子防重。
 
 ## 配置
 

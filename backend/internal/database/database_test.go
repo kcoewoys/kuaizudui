@@ -6,10 +6,46 @@ import (
 	"testing"
 
 	"github.com/eaok-cn/kuaizudui/backend/internal/domain"
+	mysqldriver "github.com/go-sql-driver/mysql"
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
+
+func TestSplitDatabaseDSNStripsDatabaseName(t *testing.T) {
+	serverDSN, dbName, err := splitDatabaseDSN(
+		"root:root@tcp(127.0.0.1:3306)/kuaizudui?charset=utf8mb4&parseTime=True&loc=Local")
+	require.NoError(t, err)
+	require.Equal(t, "kuaizudui", dbName)
+
+	parsed, err := mysqldriver.ParseDSN(serverDSN)
+	require.NoError(t, err)
+	require.Empty(t, parsed.DBName)
+	require.Equal(t, "tcp", parsed.Net)
+	require.Equal(t, "127.0.0.1:3306", parsed.Addr)
+	require.True(t, parsed.ParseTime)
+}
+
+func TestSplitDatabaseDSNAllowsMissingDatabase(t *testing.T) {
+	serverDSN, dbName, err := splitDatabaseDSN("root:root@tcp(127.0.0.1:3306)/")
+	require.NoError(t, err)
+	require.Empty(t, dbName)
+	require.NotEmpty(t, serverDSN)
+}
+
+func TestSplitDatabaseDSNRejectsInvalidDSN(t *testing.T) {
+	_, _, err := splitDatabaseDSN("invalid")
+	require.Error(t, err)
+}
+
+func TestCreateDatabaseStatementEscapesBackticks(t *testing.T) {
+	require.Equal(t,
+		"CREATE DATABASE IF NOT EXISTS `kuaizudui` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci",
+		createDatabaseStatement("kuaizudui"))
+	require.Equal(t,
+		"CREATE DATABASE IF NOT EXISTS `we``ird` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci",
+		createDatabaseStatement("we`ird"))
+}
 
 func TestMigrateRestoresOrdinaryRoundsFromPreviousCreditMigrationOnce(t *testing.T) {
 	dsn := fmt.Sprintf("file:%s?mode=memory&cache=shared", strings.ReplaceAll(t.Name(), "/", "_"))

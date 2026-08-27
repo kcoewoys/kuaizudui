@@ -2,15 +2,18 @@ package database
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/eaok-cn/kuaizudui/backend/internal/config"
 	"github.com/eaok-cn/kuaizudui/backend/internal/domain"
-	"gorm.io/driver/mysql"
+	mysqldriver "github.com/go-sql-driver/mysql"
+	gormmysql "gorm.io/driver/mysql"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
@@ -23,6 +26,9 @@ const (
 )
 
 func OpenMySQL(ctx context.Context, cfg config.MySQLConfig, debug bool) (*gorm.DB, error) {
+	if err := ensureDatabase(ctx, cfg.DSN); err != nil {
+		return nil, fmt.Errorf("ensure mysql database: %w", err)
+	}
 	logMode := logger.Warn
 	if debug {
 		logMode = logger.Info
@@ -38,7 +44,7 @@ func OpenMySQL(ctx context.Context, cfg config.MySQLConfig, debug bool) (*gorm.D
 			Colorful:                  true,
 		},
 	)
-	db, err := gorm.Open(mysql.Open(cfg.DSN), &gorm.Config{Logger: gormLogger})
+	db, err := gorm.Open(gormmysql.Open(cfg.DSN), &gorm.Config{Logger: gormLogger})
 	if err != nil {
 		return nil, fmt.Errorf("open mysql: %w", err)
 	}
@@ -53,6 +59,43 @@ func OpenMySQL(ctx context.Context, cfg config.MySQLConfig, debug bool) (*gorm.D
 		return nil, fmt.Errorf("ping mysql: %w", err)
 	}
 	return db, nil
+}
+
+// ensureDatabase creates the DSN's database when it is missing: AutoMigrate
+// only creates tables, so a dropped schema would otherwise fail startup with
+// "Unknown database".
+func ensureDatabase(ctx context.Context, dsn string) error {
+	serverDSN, dbName, err := splitDatabaseDSN(dsn)
+	if err != nil {
+		return err
+	}
+	if dbName == "" {
+		return nil
+	}
+	server, err := sql.Open("mysql", serverDSN)
+	if err != nil {
+		return fmt.Errorf("open mysql without database: %w", err)
+	}
+	defer server.Close()
+	if _, err := server.ExecContext(ctx, createDatabaseStatement(dbName)); err != nil {
+		return fmt.Errorf("create database %s: %w", dbName, err)
+	}
+	return nil
+}
+
+func splitDatabaseDSN(dsn string) (serverDSN, dbName string, err error) {
+	parsed, err := mysqldriver.ParseDSN(dsn)
+	if err != nil {
+		return "", "", fmt.Errorf("parse mysql dsn: %w", err)
+	}
+	dbName = parsed.DBName
+	parsed.DBName = ""
+	return parsed.FormatDSN(), dbName, nil
+}
+
+func createDatabaseStatement(dbName string) string {
+	return fmt.Sprintf("CREATE DATABASE IF NOT EXISTS `%s` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci",
+		strings.ReplaceAll(dbName, "`", "``"))
 }
 
 func Migrate(db *gorm.DB) error {
