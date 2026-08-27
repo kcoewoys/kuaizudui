@@ -94,6 +94,7 @@ func NewRouter(app *platform.Platform, db *gorm.DB, redisClient redis.UniversalC
 			admin.DELETE("/qrcode", server.adminRemoveGroupQRCode)
 			admin.GET("/feedback", server.adminListFeedback)
 			admin.GET("/activity-queues", server.adminActivityQueues)
+			admin.POST("/daily-reset", server.adminResetDailyData)
 		}
 	}
 	return router

@@ -135,6 +135,9 @@ export const adminApi = {
   activityQueues() {
     return request<{ items: ActivityQueueSnapshot[] }>('/admin/activity-queues')
   },
+  dailyReset() {
+    return request<{ reset: boolean }>('/admin/daily-reset', post())
+  },
   setNotice(type: string, content: string) {
     return request<NoticeRecord>('/admin/notice', post({ type, content }))
   },

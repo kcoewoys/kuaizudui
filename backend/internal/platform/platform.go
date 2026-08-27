@@ -172,6 +172,17 @@ func (p *Platform) ResetDailyDataIfDue(ctx context.Context) (bool, error) {
 	return true, nil
 }
 
+// ResetDailyDataNow performs a temporary daily reset on demand — the admin
+// panel's reset button. It shares the scheduler's mutex so a manual reset
+// never interleaves with a scheduled one, but records no completion marker:
+// the daily reset at its configured time still runs afterwards, unaffected.
+func (p *Platform) ResetDailyDataNow(ctx context.Context) error {
+	p.resetMu.Lock()
+	defer p.resetMu.Unlock()
+
+	return p.ResetDailyData(ctx)
+}
+
 // RunDailyResetScheduler blocks until ctx is cancelled, resetting the daily
 // data whenever it becomes due; a failed attempt retries every minute so a
 // transient error cannot skip the day.

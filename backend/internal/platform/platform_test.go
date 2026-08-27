@@ -833,6 +833,35 @@ func TestDailyResetRunsOncePerDay(t *testing.T) {
 	require.Zero(t, contents)
 }
 
+func TestResetDailyDataNowRunsImmediatelyWithoutMarkingToday(t *testing.T) {
+	app, db, _, _ := testPlatform(t)
+	app.business.DailyResetClock = config.Clock{Hour: 4, Minute: 0}
+	ctx := context.Background()
+	current := time.Date(2026, 8, 26, 10, 0, 0, 0, time.UTC)
+	app.now = func() time.Time { return current }
+
+	_, err := app.PublishActivity(ctx, "user-a", domain.ActivityBuyFood, "reset me")
+	require.NoError(t, err)
+
+	// The manual run ignores the due time and resets right away.
+	require.NoError(t, app.ResetDailyDataNow(ctx))
+
+	var contents int64
+	require.NoError(t, db.Model(&domain.ActivityContent{}).Count(&contents).Error)
+	require.Zero(t, contents)
+
+	// The wipe is temporary: no completion marker is recorded, so the
+	// scheduled reset still runs when its time comes and clears whatever was
+	// published in between.
+	_, err = app.PublishActivity(ctx, "user-b", domain.ActivityBuyFood, "fresh")
+	require.NoError(t, err)
+	ran, err := app.ResetDailyDataIfDue(ctx)
+	require.NoError(t, err)
+	require.True(t, ran)
+	require.NoError(t, db.Model(&domain.ActivityContent{}).Count(&contents).Error)
+	require.Zero(t, contents)
+}
+
 func TestAdminActivityQueuesSnapshotCoversEveryType(t *testing.T) {
 	app, db, _, _ := testPlatform(t)
 	ctx := context.Background()

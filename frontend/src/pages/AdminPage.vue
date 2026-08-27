@@ -99,7 +99,7 @@ onMounted(() => adminApi.clearSession())
           </header>
 
           <div class="admin-workspace-content" :class="{ 'admin-workspace-content--flush': activeSection === 'status' }">
-            <AdminStatusPanel v-if="activeSection === 'status'" @session-expired="sessionExpired" />
+            <AdminStatusPanel v-if="activeSection === 'status'" @session-expired="sessionExpired" @message="showToast" />
             <AdminRechargePanel v-else-if="activeSection === 'recharge'" @session-expired="sessionExpired" @message="showToast" />
             <AdminExchangePanel v-else-if="activeSection === 'exchanges'" @session-expired="sessionExpired" @message="showToast" />
             <AdminConfigPanel v-else-if="activeSection === 'config'" @session-expired="sessionExpired" @message="showToast" />

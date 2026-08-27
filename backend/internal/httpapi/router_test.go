@@ -20,6 +20,7 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	"github.com/eaok-cn/kuaizudui/backend/internal/config"
 	"github.com/eaok-cn/kuaizudui/backend/internal/database"
+	"github.com/eaok-cn/kuaizudui/backend/internal/domain"
 	"github.com/eaok-cn/kuaizudui/backend/internal/platform"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
@@ -428,4 +429,43 @@ func TestAdminActivityQueuesRequiresTokenAndListsEveryType(t *testing.T) {
 		require.False(t, body.Data.Items[index].Ordinary.Created)
 		require.False(t, body.Data.Items[index].Priority.Created)
 	}
+}
+
+func TestAdminDailyResetRequiresTokenAndWipesDailyData(t *testing.T) {
+	router, db, _ := testRouterComponents(t)
+
+	unauthorized := httptest.NewRecorder()
+	router.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodPost, "/api/v1/admin/daily-reset", nil))
+	require.Equal(t, http.StatusUnauthorized, unauthorized.Code)
+
+	login := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/admin/login", bytes.NewBufferString(`{"phone":"13800000000"}`))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(login, request)
+	require.Equal(t, http.StatusOK, login.Code)
+	var loginBody struct {
+		Data struct {
+			Token string `json:"token"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(login.Body.Bytes(), &loginBody))
+
+	require.NoError(t, db.Create(&domain.ActivityContent{UID: "user-a", Type: domain.ActivityBuyFood, Content: "wipe me"}).Error)
+
+	reset := httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPost, "/api/v1/admin/daily-reset", nil)
+	request.Header.Set("Authorization", "Bearer "+loginBody.Data.Token)
+	router.ServeHTTP(reset, request)
+	require.Equal(t, http.StatusOK, reset.Code)
+	var body struct {
+		Data struct {
+			Reset bool `json:"reset"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(reset.Body.Bytes(), &body))
+	require.True(t, body.Data.Reset)
+
+	var contents int64
+	require.NoError(t, db.Model(&domain.ActivityContent{}).Count(&contents).Error)
+	require.Zero(t, contents)
 }

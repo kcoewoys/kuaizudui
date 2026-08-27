@@ -6,6 +6,7 @@ import { adminApi, friendlyAdminError, isAdminUnauthorized, type ActivityQueueSn
 
 const emit = defineEmits<{
   sessionExpired: []
+  message: [text: string]
 }>()
 
 const REFRESH_SECONDS = 10
@@ -14,6 +15,7 @@ const queues = ref<ActivityQueueSnapshot[]>([])
 const loading = ref(true)
 const loadError = ref('')
 const countdown = ref(REFRESH_SECONDS)
+const resetting = ref(false)
 let refreshTimer: number | undefined
 
 const lanes = [
@@ -45,6 +47,24 @@ function refreshNow() {
   loadQueues()
 }
 
+async function resetDaily() {
+  if (!window.confirm('确定立即执行每日重置吗？将清空全部活动的发布内容与领取记录以及幸运码，用户积分等数据不受影响')) return
+  resetting.value = true
+  try {
+    await adminApi.dailyReset()
+    emit('message', '已执行每日重置')
+    refreshNow()
+  } catch (error) {
+    if (isAdminUnauthorized(error)) {
+      emit('sessionExpired')
+      return
+    }
+    loadError.value = friendlyAdminError(error)
+  } finally {
+    resetting.value = false
+  }
+}
+
 onMounted(() => {
   loadQueues()
   refreshTimer = window.setInterval(() => {
@@ -62,6 +82,7 @@ onBeforeUnmount(() => window.clearInterval(refreshTimer))
     <section class="admin-surface admin-queue-panel" :aria-busy="loading">
       <header class="admin-section-heading admin-queue-heading">
         <h2>排队队列状态</h2>
+        <button class="admin-queue-reset" type="button" :disabled="resetting" @click="resetDaily">{{ resetting ? '正在重置…' : '重置' }}</button>
         <button class="admin-queue-refresh" type="button" aria-label="立即刷新" :disabled="loading" @click="refreshNow">
           <span class="admin-queue-refresh-dot" aria-hidden="true" />{{ countdown }}s后刷新
         </button>

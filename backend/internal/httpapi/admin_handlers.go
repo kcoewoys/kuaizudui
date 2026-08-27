@@ -110,6 +110,14 @@ func (s *Server) adminActivityQueues(c *gin.Context) {
 	success(c, gin.H{"items": items})
 }
 
+func (s *Server) adminResetDailyData(c *gin.Context) {
+	if err := s.platform.ResetDailyDataNow(c.Request.Context()); err != nil {
+		fail(c, err)
+		return
+	}
+	success(c, gin.H{"reset": true})
+}
+
 func (s *Server) adminListExchangeCodes(c *gin.Context) {
 	limit, offset := parsePagination(c)
 	result, err := s.platform.AdminListExchangeCodes(c.Request.Context(), c.Query("status"), limit, offset)
