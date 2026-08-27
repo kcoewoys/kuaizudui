@@ -27,3 +27,4 @@
 
 # tools
 /.codegraph/
+/.playwright-mcp/
