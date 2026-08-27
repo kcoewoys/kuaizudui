@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
+	"os"
+	"time"
 
 	"github.com/eaok-cn/kuaizudui/backend/internal/config"
 	"github.com/eaok-cn/kuaizudui/backend/internal/domain"
@@ -24,7 +27,18 @@ func OpenMySQL(ctx context.Context, cfg config.MySQLConfig, debug bool) (*gorm.D
 	if debug {
 		logMode = logger.Info
 	}
-	db, err := gorm.Open(mysql.Open(cfg.DSN), &gorm.Config{Logger: logger.Default.LogMode(logMode)})
+	// logger.Default logs "record not found" as an error, but missing rows are an
+	// expected outcome for several lookups here (e.g. unpublished activity detail).
+	gormLogger := logger.New(
+		log.New(os.Stdout, "\r\n", log.LstdFlags),
+		logger.Config{
+			SlowThreshold:             200 * time.Millisecond,
+			LogLevel:                  logMode,
+			IgnoreRecordNotFoundError: true,
+			Colorful:                  true,
+		},
+	)
+	db, err := gorm.Open(mysql.Open(cfg.DSN), &gorm.Config{Logger: gormLogger})
 	if err != nil {
 		return nil, fmt.Errorf("open mysql: %w", err)
 	}
