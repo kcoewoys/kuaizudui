@@ -873,15 +873,16 @@ func TestAdminActivityQueuesSnapshotCoversEveryType(t *testing.T) {
 	require.False(t, byType[domain.ActivityBuyFood].Ordinary.Created)
 	require.False(t, byType[domain.ActivityDailyCash].Priority.Created)
 
-	// A priority delivery leaves the ordinary cursor alone, and the parked
-	// priority member still counts toward that queue's total.
+	// A priority delivery leaves the ordinary cursor alone; the served-out
+	// member parks in place but no longer counts toward the queue's total.
 	_, err = app.UseActivity(ctx, "user-a", activityType)
 	require.NoError(t, err)
 	snapshots, err = app.AdminActivityQueues(ctx)
 	require.NoError(t, err)
 	require.Equal(t, activityType, snapshots[2].Type)
 	require.Zero(t, snapshots[2].Ordinary.CursorSeq)
-	require.Equal(t, int64(1), snapshots[2].Priority.Total)
+	require.True(t, snapshots[2].Priority.Created)
+	require.Zero(t, snapshots[2].Priority.Total)
 
 	// Once the priority queue has nothing active left, the next claim moves
 	// the ordinary cursor. User-a already received user-b through the

@@ -96,11 +96,14 @@ func (q *ActivityQueue) RemovePriority(ctx context.Context, activityType, uid st
 
 // QueueStatus snapshots one queue for the admin monitor. Created reports
 // whether the sorted set exists at all — Redis drops empty sets, so a missing
-// key means the queue was never built. Total counts every member including
-// parked zero-count entries. Position is the ordinary queue's shared FIFO
-// cursor expressed as a zero-based rank (the member the next rotation lands
+// key means the queue was never built. The ordinary Total counts every member
+// including parked zero-count entries. Position is the ordinary queue's shared
+// FIFO cursor expressed as a zero-based rank (the member the next rotation lands
 // on) and CursorSeq is the raw cursor sequence number; the priority queue
-// keeps no cursor and reports both as zero.
+// keeps no cursor and reports both as zero. The priority Total counts only
+// members still holding paid chances — served-out members park in place so a
+// later purchase restores their position, but they no longer count once their
+// chances are used up.
 type QueueStatus struct {
 	Created   bool  `json:"created"`
 	Total     int64 `json:"total"`
@@ -141,11 +144,22 @@ func (q *ActivityQueue) OrdinaryStatus(ctx context.Context, activityType string)
 }
 
 func (q *ActivityQueue) PriorityStatus(ctx context.Context, activityType string) (QueueStatus, error) {
-	total, err := q.client.ZCard(ctx, activityZSetKey(activityType, "priority")).Result()
+	key := activityZSetKey(activityType, "priority")
+	pipe := q.client.Pipeline()
+	cardCmd := pipe.ZCard(ctx, key)
+	activeCmd := pipe.ZCount(ctx, key, "(0", "+inf")
+	if _, err := pipe.Exec(ctx); err != nil {
+		return QueueStatus{}, fmt.Errorf("load priority activity queue status: %w", err)
+	}
+	total, err := cardCmd.Result()
 	if err != nil {
 		return QueueStatus{}, fmt.Errorf("load priority activity queue status: %w", err)
 	}
-	return QueueStatus{Created: total > 0, Total: total}, nil
+	active, err := activeCmd.Result()
+	if err != nil {
+		return QueueStatus{}, fmt.Errorf("load priority activity queue status: %w", err)
+	}
+	return QueueStatus{Created: total > 0, Total: active}, nil
 }
 
 func (q *ActivityQueue) Seeded(ctx context.Context, activityType string) (bool, error) {

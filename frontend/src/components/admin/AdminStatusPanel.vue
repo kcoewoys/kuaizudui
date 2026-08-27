@@ -18,7 +18,7 @@ let refreshTimer: number | undefined
 
 const lanes = [
   { key: 'ordinary', label: '普通队列游标' },
-  { key: 'priority', label: '插队队列游标' },
+  { key: 'priority', label: '插队队列' },
 ] as const
 
 function statusOf(item: ActivityQueueSnapshot, lane: (typeof lanes)[number]): QueueStatus {
@@ -81,7 +81,8 @@ onBeforeUnmount(() => window.clearInterval(refreshTimer))
           <div class="admin-queue-rows">
             <div v-for="lane in lanes" :key="lane.key" class="admin-queue-row">
               <span>{{ lane.label }}</span>
-              <b v-if="statusOf(item, lane).created">{{ statusOf(item, lane).position }}<small> / {{ statusOf(item, lane).total }}</small></b>
+              <b v-if="statusOf(item, lane).created && lane.key === 'ordinary'">{{ statusOf(item, lane).position }}<small> / {{ statusOf(item, lane).total }}</small></b>
+              <b v-else-if="statusOf(item, lane).created">{{ statusOf(item, lane).total }}</b>
               <span v-else class="admin-queue-row-empty">未创建</span>
             </div>
           </div>

@@ -284,7 +284,7 @@ func TestActivityQueueStatusReportsCursorRankAndTotals(t *testing.T) {
 	require.Zero(t, status.Position)
 
 	// The priority queue keeps no cursor of its own: only existence and the
-	// member count are meaningful there.
+	// count of members still holding chances are meaningful there.
 	require.NoError(t, activityQueue.EnqueuePriority(ctx, domain.ActivityBuyFood, "user-d", 1))
 	status, err = activityQueue.PriorityStatus(ctx, domain.ActivityBuyFood)
 	require.NoError(t, err)
@@ -292,6 +292,14 @@ func TestActivityQueueStatusReportsCursorRankAndTotals(t *testing.T) {
 	require.Equal(t, int64(1), status.Total)
 	require.Zero(t, status.Position)
 	require.Zero(t, status.CursorSeq)
+
+	// Serving out a member's chances parks them in place: the queue still
+	// exists, but the admin count reads zero again.
+	require.NoError(t, activityQueue.AddPriority(ctx, domain.ActivityBuyFood, "user-d", -1))
+	status, err = activityQueue.PriorityStatus(ctx, domain.ActivityBuyFood)
+	require.NoError(t, err)
+	require.True(t, status.Created)
+	require.Zero(t, status.Total)
 
 	require.NoError(t, activityQueue.RemovePriority(ctx, domain.ActivityBuyFood, "user-d"))
 	status, err = activityQueue.PriorityStatus(ctx, domain.ActivityBuyFood)
