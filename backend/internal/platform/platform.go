@@ -790,10 +790,13 @@ func (p *Platform) claimPriorityActivity(ctx context.Context, claimant domain.Ac
 }
 
 // claimCursorActivity serves ordinary claims through the activity's FIFO
-// cursor: one shared position that walks the queue in publish order, skips the
-// claimant themselves, prefers publishers this claimant has not received yet,
-// and wraps back to the oldest entry once the end is reached — entries are
-// never consumed or parked, so the queue keeps cycling forever.
+// cursor: one shared position that walks the queue in publish order and skips
+// the claimant themselves plus every publisher this claimant has already
+// received, wrapping back to the oldest unserved entry once the end is
+// reached. When no publisher is left to serve the claimant it reports
+// ErrQueueEmpty, so a click that has exhausted everyone fails cleanly instead
+// of handing out a duplicate. Entries are never consumed or parked by
+// ordinary claims, so each publisher keeps serving the other claimants.
 func (p *Platform) claimCursorActivity(ctx context.Context, claimant domain.ActivityContent, activityType string, claimed []string) (ActivityUseResult, error) {
 	for attempt := 0; attempt < maxActivityQueueAttempts; attempt++ {
 		candidateUID, err := p.activity.NextByCursor(ctx, activityType, claimant.UID, claimed)
@@ -816,10 +819,10 @@ func (p *Platform) claimCursorActivity(ctx context.Context, claimant domain.Acti
 }
 
 // deliverCursorActivity hands the cursor-selected publisher's content to the
-// claimant. Cycling means a publisher can serve the same claimant again after
-// a full lap, so the claim record is bookkeeping (and input for priority
-// exclusion) rather than a uniqueness gate, and no credit is consumed — the
-// queue never drains.
+// claimant. The claim record keeps one row per claimant-publisher pair — it
+// drives the exclusion list that keeps served publishers from being picked
+// again — and no credit is consumed, so ordinary claims never drain a
+// publisher's queue entry.
 func (p *Platform) deliverCursorActivity(
 	ctx context.Context,
 	claimant domain.ActivityContent,

@@ -54,10 +54,12 @@ func (q *ActivityQueue) NextOrdinary(ctx context.Context, activityType, claimant
 // NextByCursor advances the ordinary queue's FIFO cursor and returns the
 // member it lands on. Traversal follows the enqueue sequence (the absolute
 // score) so publish order survives count changes; the claimant itself is
-// always skipped, excluded members are skipped while anyone fresher remains,
-// and once the queue runs out of fresh faces the cursor wraps to the oldest
-// member and keeps cycling — entries are never consumed, parked, or removed
-// by this, so the same queue serves claims forever.
+// always skipped, as is everyone this claimant has already received. When no
+// fresh publisher remains past the cursor the selection wraps to the oldest
+// unserved member, and once every publisher has served this claimant the call
+// reports ErrQueueEmpty — a claimant is never handed the same content twice.
+// Entries are never consumed, parked, or removed by this, so each publisher
+// keeps serving the other claimants forever.
 func (q *ActivityQueue) NextByCursor(ctx context.Context, activityType, claimantUID string, exclude []string) (string, error) {
 	args := make([]any, 0, len(exclude)+1)
 	args = append(args, claimantUID)
@@ -334,13 +336,13 @@ return ''
 `)
 
 // nextByCursorScript advances the cursor stored at KEYS[2] and returns the
-// member it lands on, in four tiers: the first member past the cursor that is
-// neither the claimant nor excluded; failing that the earliest such member
-// from the top of the queue (the wrap-around onto a fresh lap); failing that
-// the next member past the cursor even though already served; failing that
-// the earliest member that is merely not the claimant. The last two tiers
-// keep the rotation spinning instead of parking on one member once everyone
-// eligible has been served.
+// member it lands on, in two tiers: the first member past the cursor that is
+// neither the claimant nor excluded (already served by this claimant); failing
+// that the earliest such member from the top of the queue (the wrap-around
+// onto a fresh lap). Excluded members are never chosen — when everyone has
+// already served the claimant the script returns empty and the caller reports
+// that no code is available. The cursor only advances when a member is
+// actually chosen.
 var nextByCursorScript = redis.NewScript(`
 local self = ARGV[1]
 local excluded = {}
@@ -348,7 +350,7 @@ for i = 2, #ARGV do excluded[ARGV[i]] = true end
 local members = redis.call('ZRANGE', KEYS[1], 0, -1, 'WITHSCORES')
 if #members == 0 then return '' end
 local cursor = tonumber(redis.call('GET', KEYS[2]) or '0')
-local freshAfter, freshAfterSeq, freshAny, freshAnySeq, anyAfter, anyAfterSeq, any, anySeq
+local freshAfter, freshAfterSeq, freshAny, freshAnySeq
 for i = 1, #members, 2 do
   local uid = members[i]
   if uid ~= self then
@@ -357,15 +359,11 @@ for i = 1, #members, 2 do
       if not freshAnySeq or seq < freshAnySeq then freshAny, freshAnySeq = uid, seq end
       if seq > cursor and (not freshAfterSeq or seq < freshAfterSeq) then freshAfter, freshAfterSeq = uid, seq end
     end
-    if seq > cursor and (not anyAfterSeq or seq < anyAfterSeq) then anyAfter, anyAfterSeq = uid, seq end
-    if not anySeq or seq < anySeq then any, anySeq = uid, seq end
   end
 end
 local chosen, chosenSeq
 if freshAfter then chosen, chosenSeq = freshAfter, freshAfterSeq
-elseif freshAny then chosen, chosenSeq = freshAny, freshAnySeq
-elseif anyAfter then chosen, chosenSeq = anyAfter, anyAfterSeq
-else chosen, chosenSeq = any, anySeq end
+else chosen, chosenSeq = freshAny, freshAnySeq end
 if not chosen then return '' end
 redis.call('SET', KEYS[2], chosenSeq)
 return chosen

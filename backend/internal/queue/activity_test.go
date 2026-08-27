@@ -181,17 +181,10 @@ func TestActivityQueueCursorSkipsSelfAndAlreadyServed(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "user-c", uid)
 
-	// ...and once nobody fresh is left the cursor keeps rotating through the
-	// already-served members instead of parking on the oldest one.
-	uid, err = activityQueue.NextByCursor(ctx, domain.ActivityBuyFood, "user-a", []string{"user-b", "user-c"})
-	require.NoError(t, err)
-	require.Equal(t, "user-b", uid)
-	uid, err = activityQueue.NextByCursor(ctx, domain.ActivityBuyFood, "user-a", []string{"user-b", "user-c"})
-	require.NoError(t, err)
-	require.Equal(t, "user-c", uid)
-	uid, err = activityQueue.NextByCursor(ctx, domain.ActivityBuyFood, "user-a", []string{"user-b", "user-c"})
-	require.NoError(t, err)
-	require.Equal(t, "user-b", uid)
+	// ...and once nobody fresh is left the cursor stops: an already-served
+	// member is never handed out a second time.
+	_, err = activityQueue.NextByCursor(ctx, domain.ActivityBuyFood, "user-a", []string{"user-b", "user-c"})
+	require.ErrorIs(t, err, domain.ErrQueueEmpty)
 
 	// A queue holding only the claimant serves nobody.
 	require.NoError(t, activityQueue.EnqueueOrdinary(ctx, domain.ActivityDailyCash, "solo", 1))

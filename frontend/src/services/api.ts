@@ -236,7 +236,7 @@ export const api = {
 
 export function friendlyApiError(error: unknown) {
   if (!(error instanceof ApiError)) return '操作失败，请稍后重试'
-  if (error.code === 'queue_empty') return '暂时没有可领取的内容'
+  if (error.code === 'queue_empty') return '暂时无码可领，稍后再来看看'
   if (error.code === 'insufficient_points') return '可用积分不足，请减少使用积分数'
   if (error.code === 'conflict') {
     if (error.message.includes('phone')) return '该手机号码已绑定'
