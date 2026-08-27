@@ -896,3 +896,11 @@ func TestAdminActivityQueuesSnapshotCoversEveryType(t *testing.T) {
 	require.Zero(t, snapshots[2].Ordinary.CursorSeq)
 	require.Zero(t, snapshots[2].Ordinary.Position)
 }
+
+func TestAdminListFeedbackEmptyTableSerializesAsEmptySlice(t *testing.T) {
+	app, _, _, _ := testPlatform(t)
+	items, err := app.AdminListFeedback(context.Background(), 50, 0)
+	require.NoError(t, err)
+	require.NotNil(t, items)
+	require.Empty(t, items)
+}

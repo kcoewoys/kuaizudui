@@ -42,7 +42,9 @@ func (p *Platform) AdminListFeedback(ctx context.Context, limit, offset int) ([]
 	if offset < 0 {
 		offset = 0
 	}
-	var items []AdminFeedbackItem
+	// Scan leaves the destination nil with zero rows; start with an empty
+	// slice so empty lists serialize as [] instead of null.
+	items := make([]AdminFeedbackItem, 0, limit)
 	if err := p.db.WithContext(ctx).
 		Table("feedbacks").
 		Select("feedbacks.id, feedbacks.uid, users.phone, feedbacks.content, feedbacks.created_at").
