@@ -7,14 +7,16 @@ import AppFooter from '@/components/AppFooter.vue'
 import GuideModal from '@/components/GuideModal.vue'
 import ToastMessage from '@/components/ToastMessage.vue'
 import { api, friendlyApiError, type LuckyListItem } from '@/services/api'
+import { luckyTeamConfig } from '@/domain/activities'
 import { copyText } from '@/utils/clipboard'
 
+const config = luckyTeamConfig
 const router = useRouter()
 const guideOpen = ref(false)
 const codeInput = ref('')
 const error = ref('')
 const toast = ref('')
-const noticeText = ref('温馨提示：请确保填写的福袋码真实有效。严禁发布虚假无效信息，否则将会被限流。')
+const noticeText = ref(config.intro)
 const codes = ref<LuckyListItem[]>([])
 const loading = ref(true)
 const working = ref(false)
@@ -25,17 +27,6 @@ let refreshTimer: number | undefined
 let codesRequestPending = false
 
 const availableCount = computed(() => codes.value.length)
-
-const guideSteps = [
-  '首页',
-  '点击「百亿补贴」',
-  '点击「抽福袋」',
-  '再次点击「抽福袋」',
-  '点击「邀请好友抽福袋」',
-  '长按图片中的数字',
-  '复制分词文本',
-  '点击「复制」',
-]
 
 function showToast(message: string) {
   toast.value = message
@@ -50,7 +41,7 @@ async function loadCodes(withToast = false) {
   try {
     const result = await api.lucky.list(50)
     codes.value = result.items
-    if (withToast) showToast('列表已刷新')
+    if (withToast) showToast(config.listRefreshedToast)
   } catch (loadError) {
     showToast(friendlyApiError(loadError))
   } finally {
@@ -74,7 +65,7 @@ function startAutoRefresh() {
 async function publishCode() {
   const value = codeInput.value.trim()
   if (!/^\d{8,9}$/.test(value)) {
-    error.value = '请输入 8 或 9 位数字福袋码'
+    error.value = config.invalidCodeError
     return
   }
   working.value = true
@@ -82,7 +73,7 @@ async function publishCode() {
     await api.lucky.publish(value)
     codeInput.value = ''
     error.value = ''
-    showToast('福袋码发布成功')
+    showToast(config.publishedToast)
     await loadCodes()
   } catch (publishError) {
     error.value = friendlyApiError(publishError)
@@ -98,7 +89,7 @@ async function useCode(item: LuckyListItem) {
     const result = await api.lucky.use(item.id)
     await copyText(result.code)
     codes.value = codes.value.filter((candidate) => candidate.id !== item.id)
-    showToast('福袋码已复制')
+    showToast(config.usedToast)
   } catch (useError) {
     showToast(friendlyApiError(useError))
     await loadCodes()
@@ -114,7 +105,7 @@ async function receiveOne() {
     const result = await api.lucky.receive()
     await copyText(result.code)
     codes.value = codes.value.filter((candidate) => candidate.id !== result.id)
-    showToast('已领取并复制福袋码')
+    showToast(config.receivedToast)
   } catch (receiveError) {
     showToast(friendlyApiError(receiveError))
   } finally {
@@ -151,7 +142,7 @@ onBeforeUnmount(() => {
   <MobileShell>
     <header class="page-header">
       <button class="icon-button" type="button" aria-label="返回" @click="router.push('/')"><ArrowLeft :size="21" /></button>
-      <h1>福袋组队</h1>
+      <h1>{{ config.title }}</h1>
       <button class="profile-button profile-button--soft" type="button" aria-label="个人中心" @click="router.push('/profile')"><UserRound :size="18" /></button>
     </header>
 
@@ -161,7 +152,7 @@ onBeforeUnmount(() => {
 
     <button class="guide-button" type="button" @click="guideOpen = true">
       <HelpCircle :size="17" />
-      <span>如何获取邀请福袋码</span>
+      <span>{{ config.guideButton }}</span>
     </button>
 
     <section class="publish-panel publish-panel--inline card-surface">
@@ -170,34 +161,34 @@ onBeforeUnmount(() => {
         class="text-input lucky-input"
         inputmode="numeric"
         maxlength="9"
-        placeholder="填写 8 或 9 位福袋码"
-        aria-label="福袋码"
+        :placeholder="config.placeholder"
+        :aria-label="config.inputLabel"
         :disabled="working"
         @input="error = ''"
         @keyup.enter="publishCode"
       />
       <button class="primary-button publish-button" :disabled="working" type="button" @click="publishCode">
-        {{ working ? '处理中' : '立即发布' }}
+        {{ working ? config.publishingButton : config.publishButton }}
       </button>
       <p v-if="error" class="field-error publish-error">{{ error }}</p>
     </section>
 
     <section class="code-panel card-surface">
       <div class="code-panel-heading">
-        <h2>可用福袋码 <b>{{ availableCount }}</b></h2>
+        <h2>{{ config.listTitle }} <b>{{ availableCount }}</b></h2>
         <span class="status-chip" :aria-label="`${refreshCountdown} 秒后自动刷新`">
           <span />{{ refreshCountdown }}s后刷新
         </span>
       </div>
       <div class="code-actions">
-        <button class="secondary-button" :disabled="loading" type="button" @click="loadCodes(true)"><RefreshCw :size="16" />刷新</button>
-        <button class="primary-button" :disabled="working" type="button" @click="receiveOne">一键领码</button>
+        <button class="secondary-button" :disabled="loading" type="button" @click="loadCodes(true)"><RefreshCw :size="16" />{{ config.refreshButton }}</button>
+        <button class="primary-button" :disabled="working" type="button" @click="receiveOne">{{ config.receiveButton }}</button>
       </div>
 
-      <div v-if="loading" class="code-loading" aria-label="正在加载福袋码">
+      <div v-if="loading" class="code-loading" :aria-label="config.loadingLabel">
         <div v-for="index in 4" :key="index" class="skeleton-line" />
       </div>
-      <p v-else-if="codes.length === 0" class="list-empty">当前没有可领取的福袋码</p>
+      <p v-else-if="codes.length === 0" class="list-empty">{{ config.emptyText }}</p>
       <ul v-else class="code-list">
         <li v-for="item in codes" :key="item.id" :class="{ 'code-item--mine': item.is_own }">
           <div>
@@ -213,7 +204,7 @@ onBeforeUnmount(() => {
             :disabled="item.is_own || workingId !== null"
             @click="useCode(item)"
           >
-            <Check :size="14" />{{ workingId === item.id ? '领取中' : '使用' }}
+            <Check :size="14" />{{ workingId === item.id ? config.usingButton : config.useButton }}
           </button>
         </li>
       </ul>
@@ -222,9 +213,9 @@ onBeforeUnmount(() => {
     <AppFooter />
     <GuideModal
       :open="guideOpen"
-      title="如何参与抽福袋"
-      :steps="guideSteps"
-      note="图片分词文本的功能因手机品牌不同可能略有差异，比如魅族是单指长按，荣耀是双指长按。"
+      :title="config.guideTitle"
+      :steps="config.guideSteps"
+      :note="config.guideNote"
       @close="guideOpen = false"
     />
     <ToastMessage :message="toast" />

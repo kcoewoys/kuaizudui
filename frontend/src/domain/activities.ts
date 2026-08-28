@@ -66,3 +66,62 @@ export const activityConfigs: Record<InviteActivityType, InviteActivityConfig> =
 }
 
 export const inviteActivities = Object.values(activityConfigs)
+
+export interface LuckyTeamConfig {
+  title: string
+  intro: string
+  placeholder: string
+  inputLabel: string
+  publishButton: string
+  publishingButton: string
+  guideButton: string
+  guideTitle: string
+  guideSteps: string[]
+  guideNote: string
+  listTitle: string
+  refreshButton: string
+  receiveButton: string
+  useButton: string
+  usingButton: string
+  emptyText: string
+  loadingLabel: string
+  invalidCodeError: string
+  publishedToast: string
+  listRefreshedToast: string
+  usedToast: string
+  receivedToast: string
+}
+
+export const luckyTeamConfig: LuckyTeamConfig = {
+  title: '福袋组队',
+  intro: '温馨提示：请确保填写的福袋码真实有效。严禁发布虚假无效信息，否则将会被限流。',
+  placeholder: '填写 8 或 9 位福袋码',
+  inputLabel: '福袋码',
+  publishButton: '立即发布',
+  publishingButton: '处理中',
+  guideButton: '如何获取邀请福袋码',
+  guideTitle: '如何参与抽福袋',
+  guideSteps: [
+    '首页',
+    '点击「百亿补贴」',
+    '点击「抽福袋」',
+    '再次点击「抽福袋」',
+    '点击「邀请好友抽福袋」',
+    '长按图片中的数字',
+    '复制分词文本',
+    '点击「复制」',
+  ],
+  guideNote: '图片分词文本的功能因手机品牌不同可能略有差异，比如魅族是单指长按，荣耀是双指长按。',
+  listTitle: '可用福袋码',
+  refreshButton: '刷新',
+  receiveButton: '一键领码',
+  useButton: '使用',
+  usingButton: '领取中',
+  emptyText: '当前没有可领取的福袋码',
+  loadingLabel: '正在加载福袋码',
+  invalidCodeError: '请输入 8 或 9 位数字福袋码',
+  publishedToast: '福袋码发布成功',
+  listRefreshedToast: '列表已刷新',
+  usedToast: '福袋码已复制',
+  receivedToast: '已领取并复制福袋码',
+}
