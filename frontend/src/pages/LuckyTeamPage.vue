@@ -14,7 +14,7 @@ const guideOpen = ref(false)
 const codeInput = ref('')
 const error = ref('')
 const toast = ref('')
-const noticeText = ref('温馨提示：请确保填写的福袋码真实有效。严禁发布虚假信息，将按账号限流。')
+const noticeText = ref('温馨提示：请确保填写的福袋码真实有效。严禁发布虚假无效信息，否则将会被限流。')
 const codes = ref<LuckyListItem[]>([])
 const loading = ref(true)
 const working = ref(false)
@@ -224,7 +224,7 @@ onBeforeUnmount(() => {
       :open="guideOpen"
       title="如何参与抽福袋"
       :steps="guideSteps"
-      note="图片分词文本因手机品牌与操作习惯不同可能略有差异。魅族可单指长按，荣耀可双指长按。"
+      note="图片分词文本的功能因手机品牌不同可能略有差异，比如魅族是单指长按，荣耀是双指长按。"
       @close="guideOpen = false"
     />
     <ToastMessage :message="toast" />
