@@ -1,8 +1,24 @@
+# 一键部署
+
+在项目根目录用 Docker Compose 同时启动前端、后端、MySQL 和 Redis：
+
+```bash
+docker compose up --build -d
+```
+
+访问 `http://服务器IP/` 即可。前端由 Nginx 托管，`/api` 会自动反代到后端容器，前端代码无需任何修改。
+
+注意：
+
+- 上线前把根目录 `docker-compose.yml` 中的 `APP_ADMIN_TOKEN_SECRET` 换成强随机值。
+- 若之前单独跑过 `backend/docker-compose.yml`，先 `cd backend && docker compose down`，避免重复启动一套 MySQL。
+- 该方式下前端是构建时打包的静态文件，改动代码不会生效，**只用于部署，不用于开发**。
+
 # 前端
 移动端前端: Vue 3、TypeScript、Tailwind CSS
 
 
-## 运行
+## 开发运行
 
 先启动真实后端及 MySQL、Redis：
 
