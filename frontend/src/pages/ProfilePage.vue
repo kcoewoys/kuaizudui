@@ -161,7 +161,7 @@ onMounted(loadProfile)
       </div>
       <template v-else>
         <button class="profile-stat" type="button" @click="router.push('/lucky-team')">
-          <span>福袋组队</span><strong>{{ luckyStats.claimed_today }} / {{ luckyStats.published_today }}</strong><ChevronRight :size="18" />
+          <span>福袋邀请</span><strong>{{ luckyStats.claimed_today }} / {{ luckyStats.published_today }}</strong><ChevronRight :size="18" />
         </button>
         <button v-for="item in stats" :key="item.type" class="profile-stat" type="button" @click="router.push(item.path)">
           <span>{{ item.title }}</span>

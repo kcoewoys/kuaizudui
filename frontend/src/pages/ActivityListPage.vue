@@ -48,7 +48,7 @@ onMounted(async () => {
       <button class="activity-card activity-card--featured" type="button" @click="router.push('/lucky-team')">
         <ActivityMark icon="lucky" />
         <span class="activity-copy">
-          <strong>福袋组队</strong>
+          <strong>福袋邀请</strong>
           <small>快速匹配可用福袋码</small>
         </span>
         <ChevronRight class="activity-chevron" :size="20" />

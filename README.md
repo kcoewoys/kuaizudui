@@ -46,7 +46,7 @@ npm run build
 ## 页面
 
 - `/` — 活动列表
-- `/lucky-team` — 福袋组队
+- `/lucky-team` — 福袋邀请
 - `/grocery-invite` — 买菜邀请
 - `/cash-turntable` — 现金大转盘
 - `/cash-monopoly` — 现金大富翁

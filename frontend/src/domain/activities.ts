@@ -93,7 +93,7 @@ export interface LuckyTeamConfig {
 }
 
 export const luckyTeamConfig: LuckyTeamConfig = {
-  title: '福袋组队',
+  title: '福袋邀请',
   intro: '温馨提示：请确保填写的福袋码真实有效。严禁发布虚假无效信息，否则将会被限流。',
   placeholder: '填写 8 或 9 位福袋码',
   inputLabel: '福袋码',

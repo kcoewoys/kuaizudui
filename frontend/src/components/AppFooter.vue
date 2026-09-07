@@ -76,8 +76,8 @@ async function openGroup() {
       {{ openPanel === 'about' ? '关于 eaok.cn' : openPanel === 'group' ? '加入交流群' : '意见反馈' }}
     </template>
     <div v-if="openPanel === 'about'" class="simple-panel">
-      <p>一个专注于福袋组队与现金活动分享的移动端工具。</p>
-      <p>请诚信发布有效内容，共同维护顺畅的领取体验。</p>
+      <p>一个拼多多活动邀请分享的移动端工具。</p>
+      <p>请诚信发布有效内容，共同维护顺畅的邀请互助体验。</p>
     </div>
     <div v-else-if="openPanel === 'group'" class="simple-panel simple-panel--centered">
       <img v-if="qrcode" class="group-qrcode" :src="qrcode" alt="交流群二维码" />
