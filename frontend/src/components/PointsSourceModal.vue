@@ -12,8 +12,8 @@ const error = ref('')
 
 const sourceNames: Record<string, string> = {
   exchange_code: '兑换码',
-  admin_recharge: '运营充值',
-  activity_boost: '积分加速',
+  admin_recharge: '运营发放',
+  activity_boost: '积分消耗',
   invite: '邀请好友',
 }
 

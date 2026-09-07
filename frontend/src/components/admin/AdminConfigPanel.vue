@@ -13,9 +13,9 @@ const noticeTypes = [
   { value: 'home', label: '首页公告' },
   { value: 'lucky', label: '福袋邀请提示' },
   { value: 'buy_food', label: '买菜邀请提示' },
-  { value: 'cash_turntable', label: '现金大转盘提示' },
-  { value: 'cash_monopoly', label: '现金大富翁提示' },
-  { value: 'daily_cash', label: '天天领现金提示' },
+  { value: 'cash_turntable', label: '大转盘组队提示' },
+  { value: 'cash_monopoly', label: '大富翁组队提示' },
+  { value: 'daily_cash', label: '天天领组队提示' },
 ]
 
 const noticeType = ref('home')
