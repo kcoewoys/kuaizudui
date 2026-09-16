@@ -3,11 +3,11 @@ import type { ActivityIcon } from '@/domain/activities'
 
 const props = defineProps<{ icon: ActivityIcon | 'lucky'; compact?: boolean }>()
 const imageSources: Record<ActivityIcon | 'lucky', string> = {
-  lucky: '/activity-icons/lucky.png',
-  grocery: '/activity-icons/grocery.png',
-  turntable: '/activity-icons/turntable.png',
-  monopoly: '/activity-icons/monopoly.png',
-  daily: '/activity-icons/daily.png',
+  lucky: '/activity-icons/lucky.webp',
+  grocery: '/activity-icons/grocery.webp',
+  turntable: '/activity-icons/turntable.webp',
+  monopoly: '/activity-icons/monopoly.webp',
+  daily: '/activity-icons/daily.webp',
 }
 </script>
 
