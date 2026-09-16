@@ -28,3 +28,5 @@
 # tools
 /.codegraph/
 /.playwright-mcp/
+# TLS 证书（放在服务器 certs/ 目录，勿提交仓库）
+/certs/

@@ -1,0 +1,22 @@
+# 使用方法（在服务器上操作）：
+# 1. 把证书两个文件放到仓库根目录 certs/ 下：
+#    eaok.cn.pem  —— 证书完整链（fullchain，阿里云下载 nginx 格式得到的 .pem 文件）
+#    eaok.cn.key  —— 证书私钥
+# 2. cp frontend/ssl-site.conf.example certs/ssl-site.conf
+# 3. docker compose up -d --build web
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name eaok.cn;
+
+    ssl_certificate     /etc/nginx/certs/eaok.cn.pem;
+    ssl_certificate_key /etc/nginx/certs/eaok.cn.key;
+
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305;
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 1d;
+
+    include /etc/nginx/site-common.inc;
+}
