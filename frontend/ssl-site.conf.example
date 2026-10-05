@@ -4,6 +4,19 @@
 #    eaok.cn.key  —— 证书私钥
 # 2. cp frontend/ssl-site.conf.example certs/ssl-site.conf
 # 3. docker compose up -d --build web
+#
+# 本文件生效后：http:// 的请求 301 跳转到 https://；
+# HSTS 头让浏览器后续访问直接走 HTTPS，不再经过 80 端口。
+
+# server_name 比 default.conf 里的 80 兜底（server_name _）更具体，
+# 因此仅在本文件存在（即已配置证书）时，HTTP 才跳转 HTTPS
+server {
+    listen 80;
+    server_name eaok.cn;
+
+    return 301 https://$host$request_uri;
+}
+
 server {
     listen 443 ssl;
     http2 on;
@@ -17,6 +30,10 @@ server {
     ssl_prefer_server_ciphers off;
     ssl_session_cache shared:SSL:10m;
     ssl_session_timeout 1d;
+
+    # HSTS：浏览器在此后一年内对该域名强制 HTTPS（只在 HTTPS 响应上生效，
+    # 经由 /api/ 等无自定义 add_header 的 location 下发；证书续期必须及时）
+    add_header Strict-Transport-Security "max-age=31536000" always;
 
     include /etc/nginx/site-common.inc;
 }
