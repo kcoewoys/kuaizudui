@@ -123,5 +123,5 @@ export const luckyTeamConfig: LuckyTeamConfig = {
   publishedToast: '福袋码发布成功',
   listRefreshedToast: '列表已刷新',
   usedToast: '福袋码已复制',
-  receivedToast: '已领取并复制福袋码',
+  receivedToast: '已领取并复制福袋码，正在打开拼多多',
 }

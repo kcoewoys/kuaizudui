@@ -9,6 +9,7 @@ import ToastMessage from '@/components/ToastMessage.vue'
 import { api, friendlyApiError, type LuckyListItem } from '@/services/api'
 import { luckyTeamConfig } from '@/domain/activities'
 import { copyText } from '@/utils/clipboard'
+import { openPinduoduoApp } from '@/utils/pinduoduo'
 
 const config = luckyTeamConfig
 const router = useRouter()
@@ -106,6 +107,7 @@ async function receiveOne() {
     await copyText(result.code)
     codes.value = codes.value.filter((candidate) => candidate.id !== result.id)
     showToast(config.receivedToast)
+    openPinduoduoApp()
   } catch (receiveError) {
     showToast(friendlyApiError(receiveError))
   } finally {
