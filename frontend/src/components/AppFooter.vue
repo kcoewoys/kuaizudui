@@ -69,6 +69,7 @@ async function openGroup() {
     <button type="button" @click="openPanel = 'about'">关于</button>
     <button type="button" @click="openGroup">交流群</button>
     <button type="button" @click="openFeedback">反馈</button>
+    <a class="beian-link" href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">蜀ICP备2026053652号-1</a>
   </footer>
 
   <BaseModal :open="openPanel !== null" size="small" @close="openPanel = null">
