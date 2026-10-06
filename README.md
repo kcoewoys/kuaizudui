@@ -1,18 +1,47 @@
-# 一键部署
+# 服务器部署
 
-在项目根目录用 Docker Compose 同时启动前端、后端、MySQL 和 Redis：
+根目录 `docker-compose.yml` 用 Docker Compose 同时启动前端（Nginx）、后端（Go API）、MySQL 和 Redis。前端由 Nginx 托管，`/api` 会自动反代到后端容器，前端代码无需任何修改。
+
+## 前置条件
+
+- 服务器已安装 Docker 和 Docker Compose 插件。
+- 域名 A 记录已指向服务器 IP（本项目使用 `eaok.cn`；国内服务器需已完成 ICP 备案）。
+- 安全组 / 防火墙放行 80、443 端口。
+
+## 上线前必改的配置
+
+**1. 管理员手机号** —— `/admin` 管理后台登录验证用的手机号，两种方式任选，环境变量优先：
+
+- 或修改 `backend/config/config.yaml` 的 `business.admin_phone`（仓库默认为占位号 `13800000000`），保存后 `docker compose restart api` 即可生效。
+
+**2. 启用 HTTPS（证书）** —— 证书文件放在仓库根目录 `certs/` 下
+```bash
+cp frontend/ssl-site.conf.example certs/ssl-site.conf
+```
+
+**3. 避免重复启动一套 MySQL**
+- 若之前单独跑过 `backend/docker-compose.yml`，先 `cd backend && docker compose down`，避免重复启动一套 MySQL。
+
+
+
+改完以上配置后启动：
 
 ```bash
 docker compose up --build -d
 ```
 
-访问 `http://服务器IP/` 即可。前端由 Nginx 托管，`/api` 会自动反代到后端容器，前端代码无需任何修改。
+访问 `http://服务器IP/` 验证。
 
-注意：
 
-- 上线前把根目录 `docker-compose.yml` 中的 `APP_ADMIN_TOKEN_SECRET` 换成强随机值。
-- 若之前单独跑过 `backend/docker-compose.yml`，先 `cd backend && docker compose down`，避免重复启动一套 MySQL。
-- 该方式下前端是构建时打包的静态文件，改动代码不会生效，**只用于部署，不用于开发**。
+
+
+## 日常运维
+
+- 发版更新：`git pull && docker compose up --build -d`。
+- 查看日志：`docker compose logs -f api`（或 `web` / `mysql` / `redis`）。
+- 持久化数据在 `mysql_data`、`redis_data`、`qrcode_uploads` 三个 Docker 卷中，重建容器不丢失。注意业务每天 `00:00`（`business.daily_reset_time`）会清空 Redis 与当日活动数据，属设计行为，详见 [`backend/README.md`](backend/README.md)。
+- 证书续期：覆盖 `certs/` 下的 `.pem` / `.key` 后 `docker compose restart web`。HSTS 生效期间浏览器只走 HTTPS，务必在证书到期前完成续期。
+
 
 # 前端
 移动端前端: Vue 3、TypeScript、Tailwind CSS
