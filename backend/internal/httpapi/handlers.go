@@ -49,13 +49,13 @@ func (s *Server) bindPhone(c *gin.Context) {
 
 func (s *Server) applyReferral(c *gin.Context) {
 	var request struct {
-		Phone string `json:"phone"`
+		Ref string `json:"ref"`
 	}
 	if err := c.ShouldBindJSON(&request); err != nil {
 		fail(c, domain.FieldError{Field: "body", Message: "invalid JSON"})
 		return
 	}
-	result, err := s.platform.ApplyReferral(c.Request.Context(), uid(c), request.Phone)
+	result, err := s.platform.ApplyReferral(c.Request.Context(), uid(c), request.Ref)
 	if err != nil {
 		fail(c, err)
 		return

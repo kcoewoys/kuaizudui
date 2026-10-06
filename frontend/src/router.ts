@@ -23,6 +23,9 @@ export default createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
   routes: [
     { path: '/', component: ActivityListPage },
+    // 邀请落地页复用首页组件且不做跳转：微信「用浏览器打开」取的是当前
+    // URL，保留 /r/<code> 才能让浏览器里的新身份再次完成邀请绑定
+    { path: '/r/:code', component: ActivityListPage },
     { path: '/admin', component: AdminPage },
     { path: '/profile', component: ProfilePage },
     { path: '/lucky-team', component: LuckyTeamPage },

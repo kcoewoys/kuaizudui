@@ -484,21 +484,27 @@ func TestPhoneBindingIsIdempotentButCannotBeReassigned(t *testing.T) {
 	require.ErrorIs(t, err, domain.ErrConflict)
 }
 
-func TestReferralUsesBoundPhoneAndCannotBeReassigned(t *testing.T) {
+func TestReferralUsesInviteCodeAndCannotBeReassigned(t *testing.T) {
 	app, _, _, _ := testPlatform(t)
 	ctx := context.Background()
 
 	_, err := app.BindPhone(ctx, "inviter", "13900000000")
 	require.NoError(t, err)
+	inviter, err := app.UserInfo(ctx, "inviter")
+	require.NoError(t, err)
+	require.NotNil(t, inviter.InviteCode)
 	_, err = app.BindPhone(ctx, "other-inviter", "13900000001")
 	require.NoError(t, err)
+	otherInviter, err := app.UserInfo(ctx, "other-inviter")
+	require.NoError(t, err)
+	require.NotNil(t, otherInviter.InviteCode)
 
-	bound, err := app.ApplyReferral(ctx, "new-user", "13900000000")
+	bound, err := app.ApplyReferral(ctx, "new-user", *inviter.InviteCode)
 	require.NoError(t, err)
 	require.NotNil(t, bound.InvitedByPhone)
 	require.Equal(t, "13900000000", *bound.InvitedByPhone)
 	require.Zero(t, bound.Points)
-	inviter, err := app.UserInfo(ctx, "inviter")
+	inviter, err = app.UserInfo(ctx, "inviter")
 	require.NoError(t, err)
 	require.Zero(t, inviter.Points)
 
@@ -514,12 +520,12 @@ func TestReferralUsesBoundPhoneAndCannotBeReassigned(t *testing.T) {
 	require.Equal(t, "invite", history[0].Source)
 	require.Equal(t, "好友绑定手机号奖励", history[0].Description)
 
-	repeated, err := app.ApplyReferral(ctx, "new-user", "13900000001")
+	repeated, err := app.ApplyReferral(ctx, "new-user", *otherInviter.InviteCode)
 	require.NoError(t, err)
 	require.NotNil(t, repeated.InvitedByPhone)
 	require.Equal(t, "13900000000", *repeated.InvitedByPhone)
 
-	_, err = app.ApplyReferral(ctx, "another-user", "13900000003")
+	_, err = app.ApplyReferral(ctx, "another-user", "ZZZZZZZZ")
 	require.ErrorIs(t, err, domain.ErrNotFound)
 }
 
@@ -529,18 +535,67 @@ func TestReferralIsIgnoredForUsersAlreadyBoundToAPhone(t *testing.T) {
 
 	_, err := app.BindPhone(ctx, "inviter", "13900000000")
 	require.NoError(t, err)
+	inviter, err := app.UserInfo(ctx, "inviter")
+	require.NoError(t, err)
+	require.NotNil(t, inviter.InviteCode)
 	bound, err := app.BindPhone(ctx, "already-bound", "13900000001")
 	require.NoError(t, err)
 	require.Zero(t, bound.Points)
 
-	result, err := app.ApplyReferral(ctx, "already-bound", "13900000000")
+	result, err := app.ApplyReferral(ctx, "already-bound", *inviter.InviteCode)
 	require.NoError(t, err)
 	require.Nil(t, result.InvitedByPhone)
 	require.Zero(t, result.Points)
 
-	inviter, err := app.UserInfo(ctx, "inviter")
+	inviter, err = app.UserInfo(ctx, "inviter")
 	require.NoError(t, err)
 	require.Zero(t, inviter.Points)
+}
+
+func TestReferralAcceptsInviteCodeLinks(t *testing.T) {
+	app, _, _, _ := testPlatform(t)
+	ctx := context.Background()
+
+	_, err := app.BindPhone(ctx, "inviter", "13900000000")
+	require.NoError(t, err)
+	inviter, err := app.UserInfo(ctx, "inviter")
+	require.NoError(t, err)
+	require.NotNil(t, inviter.InviteCode)
+	require.Regexp(t, `^[A-HJ-NP-Z2-9]{8}$`, *inviter.InviteCode)
+
+	// 手动输入小写邀请码也能归因
+	bound, err := app.ApplyReferral(ctx, "friend", strings.ToLower(*inviter.InviteCode))
+	require.NoError(t, err)
+	require.NotNil(t, bound.InvitedByPhone)
+	require.Equal(t, "13900000000", *bound.InvitedByPhone)
+
+	// 已有邀请人后，别人的邀请码不能改绑
+	_, err = app.BindPhone(ctx, "other-inviter", "13900000001")
+	require.NoError(t, err)
+	other, err := app.UserInfo(ctx, "other-inviter")
+	require.NoError(t, err)
+	require.NotNil(t, other.InviteCode)
+	repeated, err := app.ApplyReferral(ctx, "friend", *other.InviteCode)
+	require.NoError(t, err)
+	require.Equal(t, "13900000000", *repeated.InvitedByPhone)
+
+	// 邀请码走同样的绑定手机号奖励链路
+	bound, err = app.BindPhone(ctx, "friend", "13900000002")
+	require.NoError(t, err)
+	require.Equal(t, int64(10), bound.Points)
+	inviter, err = app.UserInfo(ctx, "inviter")
+	require.NoError(t, err)
+	require.Equal(t, int64(10), inviter.Points)
+
+	_, err = app.ApplyReferral(ctx, "stranger", "ZZZZZZZZ")
+	require.ErrorIs(t, err, domain.ErrNotFound)
+
+	// 不能用自己的邀请码邀请自己
+	self, err := app.UserInfo(ctx, "stranger")
+	require.NoError(t, err)
+	require.NotNil(t, self.InviteCode)
+	_, err = app.ApplyReferral(ctx, "stranger", *self.InviteCode)
+	require.ErrorIs(t, err, domain.ErrConflict)
 }
 
 func TestActivityClaimUsesPriorityBeforeOrdinaryAndSkipsSelf(t *testing.T) {

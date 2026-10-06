@@ -23,6 +23,7 @@ type User struct {
 	ID           uint      `gorm:"primaryKey" json:"-"`
 	UID          string    `gorm:"size:40;uniqueIndex;not null" json:"uid"`
 	Phone        *string   `gorm:"size:20;uniqueIndex" json:"phone,omitempty"`
+	InviteCode   *string   `gorm:"size:12;uniqueIndex" json:"invite_code,omitempty"`
 	InvitedByUID *string   `gorm:"size:40;index" json:"-"`
 	Points       int64     `gorm:"not null;default:0" json:"points"`
 	CreatedAt    time.Time `json:"created_at"`

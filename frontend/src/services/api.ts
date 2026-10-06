@@ -23,6 +23,7 @@ export class ApiError extends Error {
 export interface UserInfo {
   uid: string
   phone?: string
+  invite_code?: string
   invited_by_phone?: string
   points: number
   first_visit: boolean
@@ -208,7 +209,7 @@ export const api = {
   user: {
     info: () => request<UserInfo>('/user/info'),
     bindPhone: (phone: string) => request<UserInfo>('/user/bind-phone', json({ phone })),
-    applyReferral: (phone: string) => request<UserInfo>('/user/referral', json({ phone })),
+    applyReferral: (ref: string) => request<UserInfo>('/user/referral', json({ ref })),
   },
   lucky: {
     list: (limit = 20) => request<{ items: LuckyListItem[]; count: number }>(`/lucky/list?limit=${limit}`),

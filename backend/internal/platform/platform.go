@@ -33,6 +33,9 @@ const (
 
 var phonePattern = regexp.MustCompile(`^1\d{10}$`)
 
+// 邀请码字符集与 domain.GenerateInviteCode 的字母表一致（无 0/O/1/I）。
+var inviteCodePattern = regexp.MustCompile(`^[A-HJ-NP-Z2-9]{4,12}$`)
+
 var errStaleActivityQueueEntry = errors.New("stale activity queue entry")
 var errActivityAlreadyClaimed = errors.New("activity publisher already claimed by claimant")
 
@@ -51,6 +54,7 @@ type Platform struct {
 type UserInfo struct {
 	UID            string  `json:"uid"`
 	Phone          *string `json:"phone,omitempty"`
+	InviteCode     *string `json:"invite_code,omitempty"`
 	InvitedByPhone *string `json:"invited_by_phone,omitempty"`
 	Points         int64   `json:"points"`
 	FirstVisit     bool    `json:"first_visit"`
@@ -324,7 +328,13 @@ func (p *Platform) EnsureUser(ctx context.Context, uid string) (domain.User, err
 	if uid == "" || len(uid) > 40 {
 		return domain.User{}, domain.FieldError{Field: "uid", Message: "must contain 1 to 40 characters"}
 	}
-	user := domain.User{UID: uid}
+	// 每次都生成一个随机邀请码再插入：uid 已存在时 OnConflict 不生效于
+	// 已有行，现有用户的邀请码保持不变（存量用户由启动迁移补发）。
+	inviteCode, err := domain.GenerateInviteCode()
+	if err != nil {
+		return domain.User{}, err
+	}
+	user := domain.User{UID: uid, InviteCode: &inviteCode}
 	if err := p.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&user).Error; err != nil {
 		return domain.User{}, fmt.Errorf("ensure user: %w", err)
 	}
@@ -407,10 +417,11 @@ func (p *Platform) BindPhone(ctx context.Context, uid, phone string) (UserInfo, 
 	return p.userInfoFromUser(ctx, user)
 }
 
-func (p *Platform) ApplyReferral(ctx context.Context, uid, inviterPhone string) (UserInfo, error) {
-	inviterPhone = strings.TrimSpace(inviterPhone)
-	if !phonePattern.MatchString(inviterPhone) {
-		return UserInfo{}, domain.FieldError{Field: "phone", Message: "must be a valid 11-digit mainland mobile number"}
+// ApplyReferral 通过邀请码（/r/<code> 链接）记录邀请关系。
+func (p *Platform) ApplyReferral(ctx context.Context, uid, inviteCode string) (UserInfo, error) {
+	inviteCode = strings.ToUpper(strings.TrimSpace(inviteCode))
+	if !inviteCodePattern.MatchString(inviteCode) {
+		return UserInfo{}, domain.FieldError{Field: "ref", Message: "must be a valid invite code"}
 	}
 	user, err := p.EnsureUser(ctx, uid)
 	if err != nil {
@@ -420,7 +431,7 @@ func (p *Platform) ApplyReferral(ctx context.Context, uid, inviterPhone string) 
 		return p.userInfoFromUser(ctx, user)
 	}
 	var inviter domain.User
-	if err := p.db.WithContext(ctx).Where("phone = ?", inviterPhone).First(&inviter).Error; err != nil {
+	if err := p.db.WithContext(ctx).Where("invite_code = ?", inviteCode).First(&inviter).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return UserInfo{}, domain.ErrNotFound
 		}
@@ -450,7 +461,7 @@ func (p *Platform) ApplyReferral(ctx context.Context, uid, inviterPhone string) 
 }
 
 func (p *Platform) userInfoFromUser(ctx context.Context, user domain.User) (UserInfo, error) {
-	result := UserInfo{UID: user.UID, Phone: user.Phone, Points: user.Points}
+	result := UserInfo{UID: user.UID, Phone: user.Phone, InviteCode: user.InviteCode, Points: user.Points}
 	if user.InvitedByUID == nil || strings.TrimSpace(*user.InvitedByUID) == "" {
 		return result, nil
 	}

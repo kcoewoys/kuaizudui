@@ -34,10 +34,9 @@ const stats = ref<ProfileActivityStat[]>([])
 const activityTypes = Object.keys(activityConfigs) as InviteActivityType[]
 const maskedUID = computed(() => userState.uid ? userState.uid.slice(0, 8).toUpperCase() : '加载中')
 const inviteUrl = computed(() => {
-  if (!userState.phone) return ''
-  const url = new URL(import.meta.env.BASE_URL, window.location.origin)
-  url.searchParams.set('ref', userState.phone)
-  return url.toString()
+  if (!userState.phone || !userState.inviteCode) return ''
+  const basePath = import.meta.env.BASE_URL.replace(/\/$/, '')
+  return `${window.location.origin}${basePath}/r/${userState.inviteCode}`
 })
 
 function showToast(message: string) {

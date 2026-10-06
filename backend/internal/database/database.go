@@ -23,6 +23,7 @@ const (
 	activityOrdinaryRoundMigrationKey  = "migration.activity_ordinary_round_v2"
 	activityRoundCreditMigrationKey    = "migration.activity_round_credit_v3"
 	activityQueueBalanceMigrationKey   = "migration.activity_queue_balance_v4"
+	userInviteCodeMigrationKey         = "migration.user_invite_code_v1"
 )
 
 func OpenMySQL(ctx context.Context, cfg config.MySQLConfig, debug bool) (*gorm.DB, error) {
@@ -119,7 +120,40 @@ func Migrate(db *gorm.DB) error {
 	if err := migrateActivityQueueBalance(db); err != nil {
 		return fmt.Errorf("migrate activity queue balance: %w", err)
 	}
+	if err := migrateUserInviteCode(db); err != nil {
+		return fmt.Errorf("migrate user invite code: %w", err)
+	}
 	return nil
+}
+
+// migrateUserInviteCode 为存量用户补发邀请码；新用户在创建时即携带邀请码。
+func migrateUserInviteCode(db *gorm.DB) error {
+	return db.Transaction(func(tx *gorm.DB) error {
+		exists, err := settingExists(tx, userInviteCodeMigrationKey)
+		if err != nil {
+			return err
+		}
+		if exists {
+			return nil
+		}
+		var users []domain.User
+		if err := tx.Find(&users).Error; err != nil {
+			return err
+		}
+		for index := range users {
+			if users[index].InviteCode != nil && strings.TrimSpace(*users[index].InviteCode) != "" {
+				continue
+			}
+			code, err := domain.GenerateInviteCode()
+			if err != nil {
+				return err
+			}
+			if err := tx.Model(&domain.User{}).Where("id = ?", users[index].ID).Update("invite_code", code).Error; err != nil {
+				return err
+			}
+		}
+		return tx.Create(&domain.Setting{Key: userInviteCodeMigrationKey, Value: "complete"}).Error
+	})
 }
 
 func migrateActivityRoundCredit(db *gorm.DB) error {
