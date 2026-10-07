@@ -1,6 +1,9 @@
 package httpapi
 
 import (
+	"strings"
+	"time"
+
 	"github.com/eaok-cn/kuaizudui/backend/internal/domain"
 	"github.com/gin-gonic/gin"
 )
@@ -99,6 +102,30 @@ func (s *Server) adminCreateExchangeCodes(c *gin.Context) {
 		return
 	}
 	created(c, gin.H{"items": result, "count": len(result)})
+}
+
+func (s *Server) adminCreatePublicExchangeCode(c *gin.Context) {
+	var request struct {
+		Points    int64  `json:"points"`
+		ExpiresAt string `json:"expires_at"`
+		MaxUses   int    `json:"max_uses"`
+		Prefix    string `json:"prefix"`
+	}
+	if err := c.ShouldBindJSON(&request); err != nil {
+		fail(c, domain.FieldError{Field: "body", Message: "invalid JSON"})
+		return
+	}
+	expiresAt, err := time.Parse(time.RFC3339, strings.TrimSpace(request.ExpiresAt))
+	if err != nil {
+		fail(c, domain.FieldError{Field: "expires_at", Message: "must be an RFC3339 time"})
+		return
+	}
+	result, err := s.platform.AdminCreatePublicExchangeCode(c.Request.Context(), request.Points, expiresAt, request.MaxUses, request.Prefix)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	created(c, gin.H{"item": result})
 }
 
 func (s *Server) adminActivityQueues(c *gin.Context) {

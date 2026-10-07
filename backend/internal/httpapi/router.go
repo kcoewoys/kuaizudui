@@ -89,6 +89,7 @@ func NewRouter(app *platform.Platform, db *gorm.DB, redisClient redis.UniversalC
 			admin.GET("/recharges", server.adminListRecharges)
 			admin.POST("/notice", server.adminSetNotice)
 			admin.POST("/exchange/create", server.adminCreateExchangeCodes)
+			admin.POST("/exchange/create-public", server.adminCreatePublicExchangeCode)
 			admin.GET("/exchanges", server.adminListExchangeCodes)
 			admin.POST("/qrcode", server.adminSetGroupQRCode)
 			admin.DELETE("/qrcode", server.adminRemoveGroupQRCode)
@@ -194,6 +195,8 @@ func fail(c *gin.Context, err error) {
 		status, code, message = http.StatusNotFound, "queue_empty", "no available lucky code"
 	case errors.Is(err, domain.ErrConflict), errors.Is(err, domain.ErrAlreadyUsed):
 		status, code, message = http.StatusConflict, "conflict", err.Error()
+	case errors.Is(err, domain.ErrExpired):
+		status, code, message = http.StatusGone, "expired", "resource expired"
 	case errors.Is(err, domain.ErrInsufficientPoints):
 		status, code, message = http.StatusUnprocessableEntity, "insufficient_points", err.Error()
 	default:

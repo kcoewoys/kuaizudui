@@ -1084,7 +1084,30 @@ func (p *Platform) Exchange(ctx context.Context, uid, code string) (ExchangeResu
 			return domain.ErrAlreadyUsed
 		}
 		now := p.now()
-		if err := tx.Model(&exchange).Updates(map[string]any{
+		if exchange.ExpiresAt != nil && !now.Before(*exchange.ExpiresAt) {
+			return domain.ErrExpired
+		}
+		if exchange.IsPublic {
+			if exchange.MaxUses > 0 && exchange.UsedCount >= int64(exchange.MaxUses) {
+				return domain.ErrAlreadyUsed
+			}
+			// (code_id, uid) 唯一索引命中时 RowsAffected 为 0，即该用户已领取过。
+			redemption := domain.ExchangeRedemption{CodeID: exchange.ID, UID: uid, Points: exchange.Points}
+			result := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&redemption)
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected == 0 {
+				return domain.ErrAlreadyUsed
+			}
+			updates := map[string]any{"used_count": gorm.Expr("used_count + 1")}
+			if exchange.MaxUses > 0 && exchange.UsedCount+1 >= int64(exchange.MaxUses) {
+				updates["status"] = domain.ExchangeStatusUsed
+			}
+			if err := tx.Model(&domain.ExchangeCode{}).Where("id = ?", exchange.ID).Updates(updates).Error; err != nil {
+				return err
+			}
+		} else if err := tx.Model(&exchange).Updates(map[string]any{
 			"status": domain.ExchangeStatusUsed, "used_uid": uid, "used_at": now,
 		}).Error; err != nil {
 			return err

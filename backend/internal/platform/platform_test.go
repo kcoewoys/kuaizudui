@@ -418,6 +418,89 @@ func TestExchangeCodeCanOnlyBeUsedOnce(t *testing.T) {
 	require.True(t, errors.Is(err, domain.ErrAlreadyUsed))
 }
 
+func TestPublicExchangeCodeRedeemableOncePerUser(t *testing.T) {
+	app, db, _, _ := testPlatform(t)
+	ctx := context.Background()
+	code, err := app.AdminCreatePublicExchangeCode(ctx, 30, time.Now().Add(2*time.Hour), 0, "PUB-")
+	require.NoError(t, err)
+	require.True(t, code.IsPublic)
+	require.True(t, strings.HasPrefix(code.Code, "PUB-"))
+
+	// 两个不同用户都能兑换，大小写不敏感。
+	_, err = app.Exchange(ctx, "user-a", strings.ToLower(code.Code))
+	require.NoError(t, err)
+	_, err = app.Exchange(ctx, "user-b", code.Code)
+	require.NoError(t, err)
+
+	// 同一用户第二次兑换被拒绝，且不会重复发积分。
+	_, err = app.Exchange(ctx, "user-a", code.Code)
+	require.True(t, errors.Is(err, domain.ErrAlreadyUsed))
+	var userA domain.User
+	require.NoError(t, db.Where("uid = ?", "user-a").First(&userA).Error)
+	require.Equal(t, int64(30), userA.Points)
+
+	var stored domain.ExchangeCode
+	require.NoError(t, db.Where("id = ?", code.ID).First(&stored).Error)
+	require.Equal(t, domain.ExchangeStatusUnused, stored.Status)
+	require.Equal(t, int64(2), stored.UsedCount)
+
+	items, err := app.AdminListExchangeCodes(ctx, "public", 20, 0)
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+	require.Equal(t, code.Code, items[0].Code)
+}
+
+func TestPublicExchangeCodeExpires(t *testing.T) {
+	app, db, _, _ := testPlatform(t)
+	ctx := context.Background()
+	code, err := app.AdminCreatePublicExchangeCode(ctx, 20, time.Now().Add(time.Hour), 0, "")
+	require.NoError(t, err)
+
+	past := time.Now().Add(-time.Minute)
+	require.NoError(t, db.Model(&domain.ExchangeCode{}).Where("id = ?", code.ID).Update("expires_at", past).Error)
+
+	_, err = app.Exchange(ctx, "user-a", code.Code)
+	require.True(t, errors.Is(err, domain.ErrExpired))
+}
+
+func TestPublicExchangeCodeStopsAtMaxUses(t *testing.T) {
+	app, db, _, _ := testPlatform(t)
+	ctx := context.Background()
+	code, err := app.AdminCreatePublicExchangeCode(ctx, 15, time.Now().Add(time.Hour), 2, "")
+	require.NoError(t, err)
+
+	_, err = app.Exchange(ctx, "user-a", code.Code)
+	require.NoError(t, err)
+	_, err = app.Exchange(ctx, "user-b", code.Code)
+	require.NoError(t, err)
+
+	var stored domain.ExchangeCode
+	require.NoError(t, db.Where("id = ?", code.ID).First(&stored).Error)
+	require.Equal(t, domain.ExchangeStatusUsed, stored.Status)
+	require.Equal(t, int64(2), stored.UsedCount)
+
+	// 领取名额用完后，第三个用户无法兑换。
+	_, err = app.Exchange(ctx, "user-c", code.Code)
+	require.True(t, errors.Is(err, domain.ErrAlreadyUsed))
+}
+
+func TestAdminCreatePublicExchangeCodeValidatesInput(t *testing.T) {
+	app, _, _, _ := testPlatform(t)
+	ctx := context.Background()
+	future := time.Now().Add(time.Hour)
+
+	_, err := app.AdminCreatePublicExchangeCode(ctx, 10, time.Now().Add(-time.Minute), 0, "")
+	require.ErrorIs(t, err, domain.ErrInvalidInput)
+	_, err = app.AdminCreatePublicExchangeCode(ctx, 10, time.Time{}, 0, "")
+	require.ErrorIs(t, err, domain.ErrInvalidInput)
+	_, err = app.AdminCreatePublicExchangeCode(ctx, 0, future, 0, "")
+	require.ErrorIs(t, err, domain.ErrInvalidInput)
+	_, err = app.AdminCreatePublicExchangeCode(ctx, 10, future, -1, "")
+	require.ErrorIs(t, err, domain.ErrInvalidInput)
+	_, err = app.AdminCreatePublicExchangeCode(ctx, 10, future, 0, "TOO-LONG-PREFIX")
+	require.ErrorIs(t, err, domain.ErrInvalidInput)
+}
+
 func TestAdminLoginRechargeAndCodeGeneration(t *testing.T) {
 	app, _, _, _ := testPlatform(t)
 	ctx := context.Background()

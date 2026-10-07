@@ -36,6 +36,10 @@ export interface ExchangeCodeRecord {
   points: number
   status: 'unused' | 'used'
   used_uid?: string
+  is_public?: boolean
+  expires_at?: string
+  max_uses?: number
+  used_count?: number
   created_at: string
   used_at?: string
 }
@@ -124,6 +128,9 @@ export const adminApi = {
   },
   createExchangeCodes(points: number, count: number, prefix: string) {
     return request<{ items: ExchangeCodeRecord[]; count: number }>('/admin/exchange/create', post({ points, count, prefix }))
+  },
+  createPublicExchangeCode(points: number, expiresAt: string, maxUses: number, prefix: string) {
+    return request<{ item: ExchangeCodeRecord }>('/admin/exchange/create-public', post({ points, expires_at: expiresAt, max_uses: maxUses, prefix }))
   },
   exchangeCodes(status = '', limit = 50, offset = 0) {
     const params = new URLSearchParams({ status, limit: String(limit), offset: String(offset) })

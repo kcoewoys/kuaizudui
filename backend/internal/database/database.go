@@ -108,6 +108,7 @@ func Migrate(db *gorm.DB) error {
 		&domain.Notice{},
 		&domain.Setting{},
 		&domain.ExchangeCode{},
+		&domain.ExchangeRedemption{},
 		&domain.RechargeRecord{},
 		&domain.PointRecord{},
 		&domain.Feedback{},

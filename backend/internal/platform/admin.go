@@ -211,6 +211,50 @@ func (p *Platform) AdminCreateExchangeCodes(ctx context.Context, points int64, c
 	return created, nil
 }
 
+// AdminCreatePublicExchangeCode 生成一个有时限的公共兑换码：多名用户可兑换，
+// 每人限一次（由 ExchangeRedemption 唯一索引保证），maxUses 为 0 表示不限总次数。
+func (p *Platform) AdminCreatePublicExchangeCode(ctx context.Context, points int64, expiresAt time.Time, maxUses int, prefix string) (domain.ExchangeCode, error) {
+	if points <= 0 || points > 1_000_000 {
+		return domain.ExchangeCode{}, domain.FieldError{Field: "points", Message: "must be between 1 and 1000000"}
+	}
+	if maxUses < 0 || maxUses > 1_000_000 {
+		return domain.ExchangeCode{}, domain.FieldError{Field: "max_uses", Message: "must be between 0 and 1000000"}
+	}
+	prefix = strings.ToUpper(strings.TrimSpace(prefix))
+	if len(prefix) > 12 {
+		return domain.ExchangeCode{}, domain.FieldError{Field: "prefix", Message: "must not exceed 12 characters"}
+	}
+	now := p.now()
+	if expiresAt.IsZero() || !expiresAt.After(now) {
+		return domain.ExchangeCode{}, domain.FieldError{Field: "expires_at", Message: "must be a future time"}
+	}
+	var code domain.ExchangeCode
+	err := p.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		for attempts := 0; attempts < 5; attempts++ {
+			suffix, err := randomReadableCode(12)
+			if err != nil {
+				return err
+			}
+			code = domain.ExchangeCode{
+				Code: prefix + suffix, Points: points, Status: domain.ExchangeStatusUnused,
+				IsPublic: true, ExpiresAt: &expiresAt, MaxUses: maxUses,
+			}
+			result := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&code)
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected == 1 {
+				return nil
+			}
+		}
+		return fmt.Errorf("could not generate a unique public exchange code")
+	})
+	if err != nil {
+		return domain.ExchangeCode{}, fmt.Errorf("create public exchange code: %w", err)
+	}
+	return code, nil
+}
+
 func (p *Platform) AdminListUsers(ctx context.Context, query string, limit, offset int) (UserPage, error) {
 	if limit < 1 || limit > 100 {
 		limit = 20
@@ -258,10 +302,14 @@ func (p *Platform) AdminListExchangeCodes(ctx context.Context, status string, li
 	}
 	db := p.db.WithContext(ctx).Model(&domain.ExchangeCode{})
 	if status != "" {
-		if status != domain.ExchangeStatusUnused && status != domain.ExchangeStatusUsed {
-			return nil, domain.FieldError{Field: "status", Message: "must be unused or used"}
+		if status != domain.ExchangeStatusUnused && status != domain.ExchangeStatusUsed && status != "public" {
+			return nil, domain.FieldError{Field: "status", Message: "must be unused, used or public"}
 		}
-		db = db.Where("status = ?", status)
+		if status == "public" {
+			db = db.Where("is_public = ?", true)
+		} else {
+			db = db.Where("status = ?", status)
+		}
 	}
 	var codes []domain.ExchangeCode
 	if err := db.Order("id DESC").Limit(limit).Offset(offset).Find(&codes).Error; err != nil {

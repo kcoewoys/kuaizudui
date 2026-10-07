@@ -83,8 +83,22 @@ type ExchangeCode struct {
 	Points    int64      `gorm:"not null" json:"points"`
 	Status    string     `gorm:"size:20;index;not null;default:unused" json:"status"`
 	UsedUID   *string    `gorm:"size:40;index" json:"used_uid,omitempty"`
+	IsPublic  bool       `gorm:"not null;default:false" json:"is_public"`
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	MaxUses   int        `gorm:"not null;default:0" json:"max_uses"`
+	UsedCount int64      `gorm:"not null;default:0" json:"used_count"`
 	CreatedAt time.Time  `json:"created_at"`
 	UsedAt    *time.Time `json:"used_at,omitempty"`
+}
+
+// ExchangeRedemption 记录公共兑换码的每次领取，(code_id, uid) 唯一索引
+// 保证同一用户对同一公共码只能兑换一次。
+type ExchangeRedemption struct {
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	CodeID    uint      `gorm:"uniqueIndex:code_uid_redemption;not null" json:"code_id"`
+	UID       string    `gorm:"size:40;uniqueIndex:code_uid_redemption;not null" json:"uid"`
+	Points    int64     `gorm:"not null" json:"points"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 type RechargeRecord struct {

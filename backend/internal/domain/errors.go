@@ -10,6 +10,7 @@ var (
 	ErrUnauthorized       = errors.New("unauthorized")
 	ErrQueueEmpty         = errors.New("queue empty")
 	ErrAlreadyUsed        = errors.New("already used")
+	ErrExpired            = errors.New("expired")
 	ErrCannotUseOwn       = errors.New("cannot use own content")
 	ErrInsufficientPoints = errors.New("insufficient points")
 )
