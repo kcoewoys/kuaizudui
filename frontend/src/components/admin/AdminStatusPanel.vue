@@ -9,7 +9,7 @@ const emit = defineEmits<{
   message: [text: string]
 }>()
 
-const REFRESH_SECONDS = 10
+const REFRESH_SECONDS = 5
 
 const queues = ref<ActivityQueueSnapshot[]>([])
 const loading = ref(true)

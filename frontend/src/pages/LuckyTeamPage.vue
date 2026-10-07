@@ -22,7 +22,8 @@ const codes = ref<LuckyListItem[]>([])
 const loading = ref(true)
 const working = ref(false)
 const workingId = ref<number | null>(null)
-const refreshCountdown = ref(10)
+const REFRESH_SECONDS = 5
+const refreshCountdown = ref(REFRESH_SECONDS)
 let toastTimer: number | undefined
 let refreshTimer: number | undefined
 let codesRequestPending = false
@@ -48,7 +49,7 @@ async function loadCodes(withToast = false) {
   } finally {
     loading.value = false
     codesRequestPending = false
-    refreshCountdown.value = 10
+    refreshCountdown.value = REFRESH_SECONDS
   }
 }
 
@@ -58,7 +59,7 @@ function startAutoRefresh() {
       refreshCountdown.value -= 1
       return
     }
-    refreshCountdown.value = 10
+    refreshCountdown.value = REFRESH_SECONDS
     void loadCodes()
   }, 1000)
 }
