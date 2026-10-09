@@ -37,9 +37,9 @@ export const activityConfigs: Record<InviteActivityType, InviteActivityConfig> =
     path: '/cash-turntable',
     icon: 'turntable',
     intro: '温馨提示：发布自己的邀请内容后，有一定的默认被他人领取次数，需要你一键领码帮助他人来获得额外的次数，或者使用积分。',
-    placeholder: '粘贴大转盘组队邀请内容',
-    guideTitle: '如何获取大转盘组队邀请内容',
-    guideSteps: ['打开大转盘组队活动', '点击「邀请好友」', '选择「微信好友」', '返回浏览器', '将邀请内容粘贴到发布框'],
+    placeholder: '粘贴二维码识别链接',
+    guideTitle: '如何获取邀请链接',
+    guideSteps: ['打开大转盘组队活动', '点击扫码助力', '长按识别访问', '点击地址栏复制', '或者截图微信扫码复制地址'],
   },
   cash_monopoly: {
     type: 'cash_monopoly',
@@ -48,9 +48,9 @@ export const activityConfigs: Record<InviteActivityType, InviteActivityConfig> =
     path: '/cash-monopoly',
     icon: 'monopoly',
     intro: '温馨提示：发布自己的邀请内容后，有一定的默认被他人领取次数，需要你一键领码帮助他人来获得额外的次数，或者使用积分。',
-    placeholder: '粘贴大富翁组队邀请内容',
-    guideTitle: '如何获取大富翁组队邀请内容',
-    guideSteps: ['打开大富翁组队活动', '点击「邀请好友」', '选择「微信好友」', '返回浏览器', '将邀请内容粘贴到发布框'],
+    placeholder: '粘贴二维码识别链接',
+    guideTitle: '如何获取邀请链接',
+    guideSteps: ['打开大富翁组队活动', '点击面对面扫码', '长按识别访问', '点击地址栏复制', '或者截图微信扫码复制地址'],
   },
   daily_cash: {
     type: 'daily_cash',
@@ -59,9 +59,9 @@ export const activityConfigs: Record<InviteActivityType, InviteActivityConfig> =
     path: '/daily-cash',
     icon: 'daily',
     intro: '温馨提示：发布自己的邀请内容后，有一定的默认被他人领取次数，需要你一键领码帮助他人来获得额外的次数，或者使用积分。',
-    placeholder: '粘贴天天领组队邀请内容',
-    guideTitle: '如何获取天天领组队邀请内容',
-    guideSteps: ['打开天天领组队活动', '点击「邀请好友」', '选择「微信好友」', '返回浏览器', '将邀请内容粘贴到发布框'],
+    placeholder: '粘贴二维码识别链接',
+    guideTitle: '如何获取邀请链接',
+    guideSteps: ['打开天天领组队活动', '点击面对面扫码', '长按识别访问', '返回浏览器', '或者截图微信扫码复制地址'],
   },
 }
 

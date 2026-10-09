@@ -42,6 +42,7 @@ export interface ActivityStateResponse {
   can_claim: boolean
   published_at?: string
   updated_at?: string
+  max_content_length: number
 }
 
 export interface ActivityUseResponse {

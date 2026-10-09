@@ -21,6 +21,8 @@ export function useInviteActivity(config: InviteActivityConfig) {
     working: false,
   })
   const draft = ref('')
+  // 接口返回前的兜底值，与后端默认配置保持一致
+  const maxLength = ref(500)
   const boostPointsInput = ref('1')
   const notice = ref(config.intro)
   const error = ref('')
@@ -34,7 +36,7 @@ export function useInviteActivity(config: InviteActivityConfig) {
   let refreshQueued = false
   let stateRevision = 0
 
-  const remaining = computed(() => 200 - draft.value.length)
+  const remaining = computed(() => maxLength.value - draft.value.length)
   // 普通队列机会总量 = 已被领取次数 + 剩余次数（发布赠送 3 次 + 领码攒出的机会）。
   const ordinaryQuota = computed(() => state.ordinaryRounds + state.ordinaryCredit)
   const isPublished = computed(() => Boolean(state.content))
@@ -64,11 +66,12 @@ export function useInviteActivity(config: InviteActivityConfig) {
   })
 
   watch(draft, () => {
-    if (draft.value.length <= 200) error.value = ''
+    if (draft.value.length <= maxLength.value) error.value = ''
   })
 
   function applyActivity(value: ActivityStateResponse, preserveDraft = false) {
     const shouldSyncDraft = !preserveDraft || draft.value === state.content
+    if (value.max_content_length > 0) maxLength.value = value.max_content_length
     state.content = value.content
     state.publishedAt = value.published_at || null
     state.updatedAt = value.updated_at || null
@@ -135,8 +138,8 @@ export function useInviteActivity(config: InviteActivityConfig) {
       error.value = '请先粘贴邀请内容'
       return false
     }
-    if (value.length > 200) {
-      error.value = '邀请内容不能超过 200 字'
+    if (value.length > maxLength.value) {
+      error.value = `邀请内容不能超过 ${maxLength.value} 字`
       return false
     }
     const wasPublished = isPublished.value
@@ -262,6 +265,7 @@ export function useInviteActivity(config: InviteActivityConfig) {
   return {
     state,
     draft,
+    maxLength,
     notice,
     error,
     toast,

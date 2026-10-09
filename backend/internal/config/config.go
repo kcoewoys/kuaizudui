@@ -115,7 +115,7 @@ func defaults() Config {
 		},
 		Business: BusinessConfig{
 			QRCodeUploadDir: "uploads", QRCodeMaxUploadBytes: 5 * 1024 * 1024,
-			LuckyCodeMinLength: 8, LuckyCodeMaxLength: 9, ActivityContentMaxLength: 200,
+			LuckyCodeMinLength: 8, LuckyCodeMaxLength: 9, ActivityContentMaxLength: 500,
 			ActivityPublishOrdinaryCredit: 3,
 			FirstVisitTTL:                 Duration(365 * 24 * time.Hour), LuckyClaimTTL: Duration(24 * time.Hour),
 			DailyResetClock: Clock{Hour: 0, Minute: 0},

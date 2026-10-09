@@ -44,7 +44,7 @@ type ActivityContent struct {
 	ID              uint      `gorm:"primaryKey" json:"id"`
 	UID             string    `gorm:"size:40;uniqueIndex:uid_activity_type;not null" json:"uid"`
 	Type            string    `gorm:"size:30;uniqueIndex:uid_activity_type;not null" json:"type"`
-	Content         string    `gorm:"type:varchar(200);not null" json:"content"`
+	Content         string    `gorm:"type:text;not null" json:"content"`
 	OrdinaryRounds  int64     `gorm:"not null;default:0" json:"ordinary_rounds"`
 	OrdinaryCredit  int64     `gorm:"not null;default:0" json:"ordinary_credit"`
 	PriorityRounds  int64     `gorm:"column:boost_rounds;not null;default:0" json:"priority_rounds"`

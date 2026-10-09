@@ -80,18 +80,19 @@ type LuckyStats struct {
 }
 
 type ActivityResult struct {
-	Type            string     `json:"type"`
-	Content         string     `json:"content"`
-	Published       bool       `json:"published"`
-	OrdinaryRounds  int64      `json:"ordinary_rounds"`
-	OrdinaryCredit  int64      `json:"ordinary_credit"`
-	PriorityRounds  int64      `json:"priority_rounds"`
-	PointsCommitted int64      `json:"points_committed"`
-	PriorityCredit  int64      `json:"priority_credit"`
-	ClaimCount      int64      `json:"claim_count"`
-	CanClaim        bool       `json:"can_claim"`
-	PublishedAt     *time.Time `json:"published_at,omitempty"`
-	UpdatedAt       *time.Time `json:"updated_at,omitempty"`
+	Type             string     `json:"type"`
+	Content          string     `json:"content"`
+	Published        bool       `json:"published"`
+	OrdinaryRounds   int64      `json:"ordinary_rounds"`
+	OrdinaryCredit   int64      `json:"ordinary_credit"`
+	PriorityRounds   int64      `json:"priority_rounds"`
+	PointsCommitted  int64      `json:"points_committed"`
+	PriorityCredit   int64      `json:"priority_credit"`
+	ClaimCount       int64      `json:"claim_count"`
+	CanClaim         bool       `json:"can_claim"`
+	PublishedAt      *time.Time `json:"published_at,omitempty"`
+	UpdatedAt        *time.Time `json:"updated_at,omitempty"`
+	MaxContentLength int        `json:"max_content_length"`
 }
 
 type ActivityUseResult struct {
@@ -684,7 +685,7 @@ func (p *Platform) ActivityDetail(ctx context.Context, uid, activityType string)
 	var item domain.ActivityContent
 	err := p.db.WithContext(ctx).Where("uid = ? AND type = ?", uid, activityType).First(&item).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return ActivityResult{Type: activityType, Published: false}, nil
+		return ActivityResult{Type: activityType, Published: false, MaxContentLength: p.business.ActivityContentMaxLength}, nil
 	}
 	if err != nil {
 		return ActivityResult{}, fmt.Errorf("load activity detail: %w", err)
@@ -967,7 +968,7 @@ func (p *Platform) deliverCursorActivity(
 	return ActivityUseResult{
 		Content: candidate.Content,
 		Source:  "ordinary",
-		State:   activityResult(claimant),
+		State:   p.activityResult(claimant),
 	}, nil
 }
 
@@ -1033,7 +1034,7 @@ func (p *Platform) deliverPriorityActivity(
 	return ActivityUseResult{
 		Content: candidate.Content,
 		Source:  "priority",
-		State:   activityResult(claimant),
+		State:   p.activityResult(claimant),
 	}, nil
 }
 
@@ -1186,7 +1187,7 @@ func maskIdentifier(value string) string {
 	return string(characters[:3]) + "***" + string(characters[len(characters)-3:])
 }
 
-func activityResult(item domain.ActivityContent) ActivityResult {
+func (p *Platform) activityResult(item domain.ActivityContent) ActivityResult {
 	return ActivityResult{
 		Type: item.Type, Content: item.Content, Published: true,
 		OrdinaryRounds: item.OrdinaryRounds, OrdinaryCredit: item.OrdinaryCredit,
@@ -1194,13 +1195,14 @@ func activityResult(item domain.ActivityContent) ActivityResult {
 		PointsCommitted: item.PointsCommitted, PriorityCredit: item.PriorityCredit,
 		ClaimCount:  item.ClaimCount,
 		PublishedAt: &item.CreatedAt, UpdatedAt: &item.UpdatedAt,
+		MaxContentLength: p.business.ActivityContentMaxLength,
 	}
 }
 
 func (p *Platform) activityResultWithAvailability(
 	ctx context.Context, uid string, item domain.ActivityContent,
 ) (ActivityResult, error) {
-	result := activityResult(item)
+	result := p.activityResult(item)
 	canClaim, err := p.canClaimActivity(ctx, uid, item.Type)
 	if err != nil {
 		return ActivityResult{}, err

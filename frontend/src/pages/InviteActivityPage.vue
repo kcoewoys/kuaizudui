@@ -17,6 +17,7 @@ const activityState = useInviteActivity(props.activity)
 const {
   state,
   draft,
+  maxLength,
   notice,
   error,
   toast,
@@ -65,11 +66,11 @@ const {
         class="publish-input"
         :class="{ 'publish-input--error': error }"
         :placeholder="activity.placeholder"
-        maxlength="201"
+        :maxlength="maxLength + 1"
         :disabled="state.loading || state.working"
       />
       <div class="publish-actions">
-        <span :class="{ 'counter--error': remaining < 0 }">{{ draft.length }}/200</span>
+        <span :class="{ 'counter--error': remaining < 0 }">{{ draft.length }}/{{ maxLength }}</span>
         <button class="primary-button publish-button" :disabled="state.loading || state.working" type="button" @click="activityState.publish">
           {{ state.working ? '处理中' : '立即发布' }}
         </button>
