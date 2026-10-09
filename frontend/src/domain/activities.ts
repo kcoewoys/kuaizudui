@@ -16,6 +16,8 @@ export interface InviteActivityConfig {
   placeholder: string
   guideTitle: string
   guideSteps: string[]
+  // 为 true 时，一键领码复制后访问内容里的链接而不是拉起拼多多 App
+  openContentLink?: boolean
 }
 
 export const activityConfigs: Record<InviteActivityType, InviteActivityConfig> = {
@@ -40,6 +42,7 @@ export const activityConfigs: Record<InviteActivityType, InviteActivityConfig> =
     placeholder: '粘贴二维码识别链接',
     guideTitle: '如何获取邀请链接',
     guideSteps: ['打开大转盘组队活动', '点击扫码助力', '长按识别访问', '点击地址栏复制', '或者截图微信扫码复制地址'],
+    openContentLink: true,
   },
   cash_monopoly: {
     type: 'cash_monopoly',
@@ -51,6 +54,7 @@ export const activityConfigs: Record<InviteActivityType, InviteActivityConfig> =
     placeholder: '粘贴二维码识别链接',
     guideTitle: '如何获取邀请链接',
     guideSteps: ['打开大富翁组队活动', '点击面对面扫码', '长按识别访问', '点击地址栏复制', '或者截图微信扫码复制地址'],
+    openContentLink: true,
   },
   daily_cash: {
     type: 'daily_cash',
@@ -62,6 +66,7 @@ export const activityConfigs: Record<InviteActivityType, InviteActivityConfig> =
     placeholder: '粘贴二维码识别链接',
     guideTitle: '如何获取邀请链接',
     guideSteps: ['打开天天领组队活动', '点击面对面扫码', '长按识别访问', '返回浏览器', '或者截图微信扫码复制地址'],
+    openContentLink: true,
   },
 }
 

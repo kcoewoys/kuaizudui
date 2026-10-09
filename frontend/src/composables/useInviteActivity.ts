@@ -3,7 +3,7 @@ import type { InviteActivityConfig } from '@/domain/activities'
 import { api, friendlyApiError, subscribeActivityUpdates, type ActivityStateResponse } from '@/services/api'
 import { loadUser, userState } from '@/services/session'
 import { copyText } from '@/utils/clipboard'
-import { openPinduoduoApp } from '@/utils/pinduoduo'
+import { openContentLink, openPinduoduoApp } from '@/utils/pinduoduo'
 
 export function useInviteActivity(config: InviteActivityConfig) {
   const state = reactive({
@@ -204,8 +204,13 @@ export function useInviteActivity(config: InviteActivityConfig) {
       const result = await api.activity.use(config.type)
       applyActivity(result.state)
       await copyText(result.content)
-      showToast(result.source === 'priority' ? '已优先领码并复制，正在打开拼多多' : '邀请内容已复制，正在打开拼多多')
-      openPinduoduoApp()
+      const opened = config.openContentLink ? openContentLink(result.content) : false
+      if (opened) {
+        showToast(result.source === 'priority' ? '已优先领码并复制，正在打开链接' : '邀请内容已复制，正在打开链接')
+      } else {
+        showToast(result.source === 'priority' ? '已优先领码并复制，正在打开拼多多' : '邀请内容已复制，正在打开拼多多')
+        openPinduoduoApp()
+      }
     } catch (copyError) {
       showToast(friendlyApiError(copyError))
     } finally {
