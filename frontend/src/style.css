@@ -837,6 +837,32 @@ a {
   color: var(--ink);
 }
 
+.app-footer .footer-group-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 15px;
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--primary);
+  background: var(--mint);
+  animation: footer-group-flash 1.2s ease-in-out infinite;
+}
+
+@keyframes footer-group-flash {
+  0%,
+  100% {
+    color: var(--primary);
+    background: var(--mint);
+    box-shadow: 0 0 0 0 rgba(0, 110, 42, 0);
+  }
+
+  50% {
+    color: #ffffff;
+    background: var(--primary);
+    box-shadow: 0 3px 12px rgba(0, 110, 42, 0.35);
+  }
+}
+
 .publish-panel--inline {
   display: grid;
   grid-template-columns: 1fr auto;

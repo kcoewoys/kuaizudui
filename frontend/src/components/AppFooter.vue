@@ -67,7 +67,7 @@ async function openGroup() {
 <template>
   <footer class="app-footer" aria-label="辅助导航">
     <button type="button" @click="openPanel = 'about'">关于</button>
-    <button type="button" @click="openGroup">交流群</button>
+    <button type="button" @click="openGroup"><span class="footer-group-pill">交流群</span></button>
     <button type="button" @click="openFeedback">反馈</button>
     <a class="beian-link" href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">蜀ICP备2026053652号-1</a>
   </footer>
