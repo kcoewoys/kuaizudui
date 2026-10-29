@@ -2,6 +2,8 @@ server:
   host: 0.0.0.0
   port: 8080
   mode: debug
+  # 启动阶段等待 MySQL/Redis 就绪的最长时间，超时后进程退出
+  startup_timeout: 60s
   read_timeout: 10s
   write_timeout: 15s
   shutdown_timeout: 10s

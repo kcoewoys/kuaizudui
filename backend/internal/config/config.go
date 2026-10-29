@@ -52,9 +52,12 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	Host            string   `yaml:"host"`
-	Port            int      `yaml:"port"`
-	Mode            string   `yaml:"mode"`
+	Host string `yaml:"host"`
+	Port int    `yaml:"port"`
+	Mode string `yaml:"mode"`
+	// StartupTimeout bounds how long boot blocks on MySQL/Redis readiness
+	// before the process exits.
+	StartupTimeout  Duration `yaml:"startup_timeout"`
 	ReadTimeout     Duration `yaml:"read_timeout"`
 	WriteTimeout    Duration `yaml:"write_timeout"`
 	ShutdownTimeout Duration `yaml:"shutdown_timeout"`
@@ -101,7 +104,8 @@ func defaults() Config {
 	return Config{
 		Server: ServerConfig{
 			Host: "0.0.0.0", Port: 8080, Mode: "debug",
-			ReadTimeout: Duration(10 * time.Second), WriteTimeout: Duration(15 * time.Second),
+			StartupTimeout: Duration(60 * time.Second),
+			ReadTimeout:    Duration(10 * time.Second), WriteTimeout: Duration(15 * time.Second),
 			ShutdownTimeout: Duration(10 * time.Second),
 			AllowedOrigins:  []string{"http://localhost:5173", "http://127.0.0.1:5173"},
 		},
@@ -156,7 +160,7 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.Redis.Address) == "" {
 		problems = append(problems, "redis.address is required")
 	}
-	if c.Server.ReadTimeout.Value() <= 0 || c.Server.WriteTimeout.Value() <= 0 || c.Server.ShutdownTimeout.Value() <= 0 {
+	if c.Server.StartupTimeout.Value() <= 0 || c.Server.ReadTimeout.Value() <= 0 || c.Server.WriteTimeout.Value() <= 0 || c.Server.ShutdownTimeout.Value() <= 0 {
 		problems = append(problems, "server timeouts must be positive")
 	}
 	if c.MySQL.MaxIdleConnections < 0 || c.MySQL.MaxOpenConnections < 1 {

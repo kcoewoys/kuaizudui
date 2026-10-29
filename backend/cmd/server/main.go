@@ -35,7 +35,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	startupContext, cancelStartup := context.WithTimeout(context.Background(), cfg.Server.ReadTimeout.Value())
+	startupContext, cancelStartup := context.WithTimeout(context.Background(), cfg.Server.StartupTimeout.Value())
 	defer cancelStartup()
 
 	db, err := database.OpenMySQL(startupContext, cfg.MySQL, cfg.Server.Mode == "debug")

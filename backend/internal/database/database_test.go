@@ -1,9 +1,12 @@
 package database
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/eaok-cn/kuaizudui/backend/internal/domain"
 	mysqldriver "github.com/go-sql-driver/mysql"
@@ -45,6 +48,51 @@ func TestCreateDatabaseStatementEscapesBackticks(t *testing.T) {
 	require.Equal(t,
 		"CREATE DATABASE IF NOT EXISTS `we``ird` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci",
 		createDatabaseStatement("we`ird"))
+}
+
+func TestRetryOpenMySQLReturnsFirstSuccessfulAttempt(t *testing.T) {
+	sentinel := &gorm.DB{}
+	attempts := 0
+	db, err := retryOpenMySQL(context.Background(), time.Millisecond, func(context.Context) (*gorm.DB, error) {
+		attempts++
+		return sentinel, nil
+	})
+	require.NoError(t, err)
+	require.Same(t, sentinel, db)
+	require.Equal(t, 1, attempts)
+}
+
+func TestRetryOpenMySQLRetriesTransientFailuresUntilSuccess(t *testing.T) {
+	sentinel := &gorm.DB{}
+	attempts := 0
+	db, err := retryOpenMySQL(context.Background(), time.Millisecond, func(context.Context) (*gorm.DB, error) {
+		attempts++
+		if attempts < 3 {
+			return nil, errors.New("driver: bad connection")
+		}
+		return sentinel, nil
+	})
+	require.NoError(t, err)
+	require.Same(t, sentinel, db)
+	require.Equal(t, 3, attempts)
+}
+
+func TestRetryOpenMySQLGivesUpWhenDeadlineExceeded(t *testing.T) {
+	// 连接一直失败时必须在 ctx 截止后立刻返回，而不是再等一个重试间隔。
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	lastFailure := errors.New("driver: bad connection")
+	attempts := 0
+	start := time.Now()
+	db, err := retryOpenMySQL(ctx, 50*time.Millisecond, func(context.Context) (*gorm.DB, error) {
+		attempts++
+		return nil, lastFailure
+	})
+	require.Error(t, err)
+	require.ErrorIs(t, err, lastFailure)
+	require.Nil(t, db)
+	require.Less(t, time.Since(start), 5*time.Second)
+	require.Equal(t, 1, attempts)
 }
 
 func TestMigrateRestoresOrdinaryRoundsFromPreviousCreditMigrationOnce(t *testing.T) {

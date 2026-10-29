@@ -11,7 +11,9 @@ services:
     volumes:
       - mysql_data:/var/lib/mysql
     healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -proot --silent"]
+      # 用真实客户端连接（SELECT 1）探活。mysqladmin ping 在服务端还没真正
+      # 接受客户端握手时也会返回成功，会让 api 过早启动。
+      test: ["CMD", "mysql", "-h", "127.0.0.1", "-uroot", "-proot", "--connect-timeout=3", "-e", "SELECT 1"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -42,6 +44,8 @@ services:
       - qrcode_uploads:/app/uploads
     ports:
       - "8080:8080"
+    # MySQL 未就绪等瞬时故障下自动拉起，避免 api 退出后 8080 一直无人监听
+    restart: unless-stopped
     depends_on:
       mysql:
         condition: service_healthy

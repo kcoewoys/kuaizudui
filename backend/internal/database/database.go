@@ -26,7 +26,40 @@ const (
 	userInviteCodeMigrationKey         = "migration.user_invite_code_v1"
 )
 
+// mysqlRetryInterval is the pause between connection attempts while waiting
+// for MySQL to accept clients.
+const mysqlRetryInterval = time.Second
+
 func OpenMySQL(ctx context.Context, cfg config.MySQLConfig, debug bool) (*gorm.DB, error) {
+	return retryOpenMySQL(ctx, mysqlRetryInterval, func(ctx context.Context) (*gorm.DB, error) {
+		return connectMySQL(ctx, cfg, debug)
+	})
+}
+
+// retryOpenMySQL reruns connect until it succeeds or ctx is done. At boot the
+// compose healthcheck can mark MySQL healthy while the server still aborts
+// client handshakes, so a single failed attempt must not kill the process.
+func retryOpenMySQL(
+	ctx context.Context, interval time.Duration, connect func(context.Context) (*gorm.DB, error),
+) (*gorm.DB, error) {
+	for attempt := 1; ; attempt++ {
+		db, err := connect(ctx)
+		if err == nil {
+			return db, nil
+		}
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("mysql connect failed after %d attempts: %w", attempt, err)
+		}
+		log.Printf("[mysql] connect attempt %d failed, retrying in %s: %v", attempt, interval, err)
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("mysql connect failed after %d attempts: %w", attempt, err)
+		case <-time.After(interval):
+		}
+	}
+}
+
+func connectMySQL(ctx context.Context, cfg config.MySQLConfig, debug bool) (*gorm.DB, error) {
 	if err := ensureDatabase(ctx, cfg.DSN); err != nil {
 		return nil, fmt.Errorf("ensure mysql database: %w", err)
 	}
